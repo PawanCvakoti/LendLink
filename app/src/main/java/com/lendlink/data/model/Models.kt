@@ -52,6 +52,8 @@ data class Item(
     val borrowerName: String = "",
     val borrowerPhone: String = "",
     val borrowerLocation: String = "",
+    val recordId: String = "",
+    val damageReport: DamageReport? = null,
     val deadline: Long = 0L,
     val borrowedAt: Long = 0L,
     val createdAt: Long = System.currentTimeMillis()
@@ -64,7 +66,7 @@ data class BorrowRecord(
     val itemId: String = "",
     val itemName: String = "",
     val itemImageUrl: String = "",
-    val itemCategory: String = "", // Added category
+    val itemCategory: String = "",
     val lenderId: String = "",
     val lenderName: String = "",
     val lenderPhone: String = "",
@@ -77,8 +79,37 @@ data class BorrowRecord(
     val borrowedAt: Long = 0L,
     val deadline: Long = 0L,
     val returnedAt: Long = 0L,
-    val status: String = "active",  // "active", "return_requested", "returned"
-    val penaltyAccrued: Long = 0L
+    val status: String = "active",  // "active", "return_requested", "damaged", "negotiating", "returned"
+    val penaltyAccrued: Long = 0L,
+    val damageReport: DamageReport? = null
+)
+
+// ── Damage Report ─────────────────────────────────────────────
+data class DamageReport(
+    val condition: String = "", // "Minor", "Moderate", "Severe"
+    val description: String = "",
+    val chargeAmount: Long = 0L,
+    val damageImageUrl: String = "",
+    val reportedAt: Long = System.currentTimeMillis(),
+    val status: String = "pending" // "pending", "negotiating", "paid", "resolved"
+)
+
+// ── Damage History ────────────────────────────────────────────
+@Entity(tableName = "damage_history")
+data class DamageHistory(
+    @PrimaryKey val historyId: String = "",
+    val itemId: String = "",
+    val itemName: String = "",
+    val lenderId: String = "",
+    val lenderName: String = "",
+    val borrowerId: String = "",
+    val borrowerName: String = "",
+    val damageImageUrl: String = "",
+    val condition: String = "",
+    val description: String = "",
+    val chargeAmount: Long = 0L,
+    val paymentStatus: String = "", // "Paid" or "Negotiated"
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 // ── CreditHistory (Lender) ────────────────────────────────────
@@ -87,7 +118,7 @@ data class LenderCreditHistory(
     @PrimaryKey val entryId: String = "",
     val lenderId: String = "",
     val amount: Long = 0L,
-    val type: String = "",           // "borrow_payment" or "penalty"
+    val type: String = "",           // "borrow_payment", "penalty", "damage_charge"
     val borrowerName: String = "",
     val itemName: String = "",
     val itemId: String = "",
@@ -102,7 +133,7 @@ data class BorrowerPaymentHistory(
     @PrimaryKey val entryId: String = "",
     val borrowerId: String = "",
     val amount: Long = 0L,
-    val type: String = "",           // "borrow_payment" or "penalty"
+    val type: String = "",           // "borrow_payment", "penalty", "damage_charge"
     val lenderName: String = "",
     val itemName: String = "",
     val itemId: String = "",
@@ -110,6 +141,7 @@ data class BorrowerPaymentHistory(
     val description: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
+
 
 // ── LendHistory (Lender) ──────────────────────────────────────
 @Entity(tableName = "lend_history")

@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -48,6 +49,7 @@ import com.lendlink.ui.common.*
 import com.lendlink.ui.lender.*
 import com.lendlink.ui.theme.*
 import com.lendlink.viewmodel.*
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 // ══════════════════════════════════════════════════════════════
@@ -63,6 +65,7 @@ fun BorrowerDashboard(
     onNotifications: () -> Unit,
     onPaymentHistory: () -> Unit,
     onBorrowHistory: () -> Unit,
+    onDamageHistory: () -> Unit,
     onProfile: () -> Unit,
     onBrowseItem: (Item) -> Unit,
     onLogout: () -> Unit
@@ -82,13 +85,22 @@ fun BorrowerDashboard(
     val selectedCatActive by vm.selectedCatActive.collectAsState()
 
     val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(ui) {
         val s = ui
-        if (s is UiState.Success) { snack.showSnackbar(s.message); vm.resetUi() }
-        else if (s is UiState.Error) { snack.showSnackbar(s.message); vm.resetUi() }
+        if (s is UiState.Success) { 
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
+            vm.resetUi()
+            // If we are scanning from dashboard and succeed, maybe switch tab to show active borrows
+            if (s.message.contains("successfully")) selectedTab = 0
+        }
+        else if (s is UiState.Error) { 
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
+            vm.resetUi() 
+        }
     }
 
     if (scanned != null) {
@@ -126,6 +138,7 @@ fun BorrowerDashboard(
                             DropdownMenuItem(text = { Text("My Profile") }, leadingIcon = { Icon(Icons.Default.Person, null) }, onClick = { menu = false; onProfile() })
                             DropdownMenuItem(text = { Text("Payment History") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.ReceiptLong, null) }, onClick = { menu = false; onPaymentHistory() })
                             DropdownMenuItem(text = { Text("Borrow History") }, leadingIcon = { Icon(Icons.Default.History, null) }, onClick = { menu = false; onBorrowHistory() })
+                            DropdownMenuItem(text = { Text("Damage History") }, leadingIcon = { Icon(Icons.Default.Warning, null) }, onClick = { menu = false; onDamageHistory() })
                             HorizontalDivider()
                             DropdownMenuItem(
                                 text = { Text("Logout", color = MaterialTheme.colorScheme.error) }, 
@@ -218,15 +231,28 @@ fun BorrowerDashboard(
 
 @Composable
 fun ActiveBorrowCard(record: BorrowRecord, onClick: (BorrowRecord) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().clickable { onClick(record) }, shape = RoundedCornerShape(12.dp)) {
+    val overdue = record.deadline > 0L && System.currentTimeMillis() > record.deadline
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onClick(record) },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (overdue) Color(0xFFFFF8F6) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        )
+    ) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             ItemImage(record.itemImageUrl, modifier = Modifier.size(60.dp).clip(RoundedCornerShape(8.dp)))
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(record.itemName, fontWeight = FontWeight.Bold)
-                Text("Lender: ${record.lenderName}", style = MaterialTheme.typography.bodySmall)
+                Text(record.itemName, fontWeight = FontWeight.ExtraBold, color = if (overdue) Color.Black else Color.Unspecified)
+                Text("Lender: ${record.lenderName}", style = MaterialTheme.typography.bodySmall, color = if (overdue) Color.Black.copy(0.7f) else Color.Unspecified)
+                if (overdue) {
+                    Text("Due: ${fmtDate(record.deadline)}", style = MaterialTheme.typography.labelSmall, color = OverdueRed, fontWeight = FontWeight.Bold)
+                }
             }
-            StatusChip("Active", Color(0xFF2196F3))
+            StatusChip(
+                if (overdue) "Overdue" else if (record.status == "return_requested") "Returning" else if (record.status == "damaged" || record.status == "negotiating") "Damaged" else "Active",
+                if (overdue || record.status == "damaged" || record.status == "negotiating") OverdueRed else if (record.status == "return_requested") LentOrange else Color(0xFF2196F3)
+            )
         }
     }
 }
@@ -251,27 +277,129 @@ fun ItemCard(item: Item, onClick: (Item) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BorrowerAvailableItemDetailScreen(item: Item, onBack: () -> Unit, onScan: () -> Unit) {
-    Scaffold(topBar = {
-        TopAppBar(title = { Text(item.name) }, navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White))
-    }) { pad ->
-        Column(modifier = Modifier.fillMaxSize().padding(top = pad.calculateTopPadding()).verticalScroll(rememberScrollState())) {
-            ItemImage(item.imageUrl, modifier = Modifier.fillMaxWidth().height(240.dp), clip = false) 
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Text(item.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); StatusChip("Available", Color(0xFF4CAF50)) }
-                Text(krw(item.price), style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+fun BorrowerAvailableItemDetailScreen(item: Item, vm: BorrowerViewModel, onBack: () -> Unit, onScan: () -> Unit) {
+    val scanned by vm.scanned.collectAsState()
+    val ui by vm.ui.collectAsState()
+    val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(ui) {
+        val s = ui
+        if (s is UiState.Success) {
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
+            vm.resetUi()
+            // If borrowed successfully, go back to dashboard to see active borrows
+            if (s.message.contains("successfully")) onBack()
+        } else if (s is UiState.Error) {
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
+            vm.resetUi()
+        }
+    }
+
+    if (scanned != null) {
+        BorrowConfirmDialog(
+            item = scanned!!,
+            onDismiss = {
+                vm.clearScanned()
+                vm.resetUi()
+            },
+            onConfirm = {
+                vm.confirmBorrow(it)
+            }
+        )
+    }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snack) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Item Details") },
+                navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) } },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = Color.White,
+                    navigationIconContentColor = Color.White
+                )
+            )
+        }) { pad ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(pad)
+                .verticalScroll(rememberScrollState())
+        ) {
+            ItemImage(item.imageUrl, modifier = Modifier.fillMaxWidth().height(300.dp), clip = false)
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        item.name,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatusChip("Available", AvailGreen)
+                }
+                Text(
+                    krw(item.price),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
                 HorizontalDivider()
-                DetailRow("Category", item.category)
+                
+                DetailRow("Category", item.category.ifBlank { "General" })
                 DetailRow("Lender Name", item.lenderName)
                 DetailRow("Lender Phone", item.lenderPhone.ifEmpty { "Not provided" })
                 DetailRow("Lender Location", item.lenderLocation)
                 DetailRow("Description", item.description.ifEmpty { "No description provided." })
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Info, null, tint = MaterialTheme.colorScheme.onSecondaryContainer); Spacer(Modifier.width(12.dp)); Text("To borrow this item, please meet the lender and scan their item QR code.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer) }
-                        Button(onClick = onScan, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) { Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Scan QR Code Now") }
+
+                Spacer(Modifier.height(8.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f)
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Info,
+                                null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "To borrow this item, please meet the lender and scan their item QR code.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Button(
+                            onClick = onScan,
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Scan QR Code Now", style = MaterialTheme.typography.titleMedium)
+                        }
                     }
                 }
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
@@ -279,15 +407,16 @@ fun BorrowerAvailableItemDetailScreen(item: Item, onBack: () -> Unit, onScan: ()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BorrowerItemDetailScreen(record: BorrowRecord, vm: BorrowerViewModel, onBack: () -> Unit) {
+fun BorrowerItemDetailScreen(record: BorrowRecord, vm: BorrowerViewModel, onBack: () -> Unit, onViewDamage: (String) -> Unit) {
     var showReturnDialog by remember { mutableStateOf(false) }
     val uiState by vm.ui.collectAsState()
     val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(uiState) {
         val s = uiState
         if (s is UiState.Success) {
-            snack.showSnackbar(s.message)
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
             vm.resetUi()
         }
     }
@@ -313,7 +442,9 @@ fun BorrowerItemDetailScreen(record: BorrowRecord, vm: BorrowerViewModel, onBack
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(record.itemName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    StatusChip("Active", Color(0xFF2196F3))
+                    val statusLabel = if (record.status == "damaged") "Damaged" else if (record.status == "negotiating") "Negotiating" else "Active"
+                    val statusColor = if (record.status == "active") Color(0xFF2196F3) else OverdueRed
+                    StatusChip(statusLabel, statusColor)
                 }
                 Text(krw(record.price), style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 
@@ -327,39 +458,52 @@ fun BorrowerItemDetailScreen(record: BorrowRecord, vm: BorrowerViewModel, onBack
                 
                 Spacer(Modifier.height(8.dp))
                 
-                val isRequested = record.status == "return_requested"
-                
-                Button(
-                    onClick = { if (!isRequested) showReturnDialog = true },
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    enabled = !isRequested,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = Color.White,
-                        disabledContainerColor = Color(0xFFE0E0E0),
-                        disabledContentColor = Color(0xFF757575)
-                    )
-                ) {
-                    Icon(
-                        if (isRequested) Icons.Default.CheckCircle else Icons.AutoMirrored.Filled.AssignmentReturn, 
-                        null
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (isRequested) "Return Request Sent" else "Request Return to Lender", 
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
+                if (record.status == "damaged" || record.status == "negotiating") {
+                    Button(
+                        onClick = { onViewDamage(record.recordId) },
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OverdueRed)
+                    ) {
+                        Icon(Icons.Default.Warning, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("View Damage Report", style = MaterialTheme.typography.titleMedium)
+                    }
+                } else {
+                    val isRequested = record.status == "return_requested"
+                    
+                    Button(
+                        onClick = { if (!isRequested) showReturnDialog = true },
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = !isRequested,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = Color.White,
+                            disabledContainerColor = Color(0xFFE0E0E0),
+                            disabledContentColor = Color(0xFF757575)
+                        )
+                    ) {
+                        Icon(
+                            if (isRequested) Icons.Default.CheckCircle else Icons.AutoMirrored.Filled.AssignmentReturn, 
+                            null
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (isRequested) "Return Request Sent" else "Request Return to Lender", 
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
 
-                if (isRequested) {
-                    Text(
-                        "Please wait for the lender to accept your return request.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        textAlign = TextAlign.Center
-                    )
+                    if (isRequested) {
+                        Text(
+                            "Please wait for the lender to accept your return request.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
                 
                 Spacer(Modifier.height(16.dp))
@@ -370,13 +514,133 @@ fun BorrowerItemDetailScreen(record: BorrowRecord, vm: BorrowerViewModel, onBack
 
 @Composable
 fun BorrowConfirmDialog(item: Item, onDismiss: () -> Unit, onConfirm: (Item) -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Borrow ${item.name}?") },
-        text = { Text("Are you sure you want to borrow this item for ${krw(item.price)}? The amount will be deducted from your wallet.") },
-        confirmButton = { Button({ onConfirm(item) }) { Text("Confirm Borrow") } },
-        dismissButton = { TextButton(onDismiss) { Text("Cancel") } }
-    )
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color.White,
+            modifier = Modifier.fillMaxWidth().padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Confirm Borrow",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.Black,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                // Item Photo Placeholder/Image
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFE3F2FD),
+                    modifier = Modifier.fillMaxWidth().height(140.dp)
+                ) {
+                    if (item.imageUrl.isNotEmpty()) {
+                        AsyncImage(
+                            model = item.imageUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("ITEM PHOTO", color = Color(0xFF90CAF9), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                // Details Table
+                DetailRow("Item", item.name, labelColor = Color.Black, valueColor = Color.Black)
+                HorizontalDivider(color = Color.LightGray.copy(0.5f), thickness = 1.dp)
+                DetailRow("Lender", item.lenderName, labelColor = Color.Black, valueColor = Color.Black)
+                HorizontalDivider(color = Color.LightGray.copy(0.5f), thickness = 1.dp)
+                DetailRow("Price", krw(item.price), labelColor = Color.Black, valueColor = Color.Black)
+                HorizontalDivider(color = Color.LightGray.copy(0.5f), thickness = 1.dp)
+                DetailRow("Return by", "7 days from today", labelColor = Color.Black, valueColor = Color.Black)
+
+                Spacer(Modifier.height(16.dp))
+
+                // Info Box
+                Surface(
+                    color = Color(0xFFF5F5F5),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(modifier = Modifier.width(4.dp).height(24.dp).background(Color.Black, RoundedCornerShape(2.dp)))
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "${krw(item.price)} will be deducted from your wallet",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.Black
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(24.dp))
+
+                // Buttons
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(2.dp, Color.Black)
+                    ) {
+                        Text("Cancel", fontWeight = FontWeight.ExtraBold, color = Color.Black)
+                    }
+                    Button(
+                        onClick = { onConfirm(item) },
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Black, contentColor = Color.White),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                    ) {
+                        Text("Borrow", fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(
+    label: String, 
+    value: String, 
+    labelColor: Color = MaterialTheme.colorScheme.onSurface,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label, 
+            style = MaterialTheme.typography.bodyLarge, 
+            color = labelColor,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(0.4f)
+        )
+        Text(
+            value, 
+            style = MaterialTheme.typography.bodyLarge, 
+            fontWeight = FontWeight.ExtraBold,
+            color = valueColor,
+            modifier = Modifier.weight(0.6f),
+            textAlign = TextAlign.End
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -400,7 +664,13 @@ fun ProfileScreen(user: User, authVm: AuthViewModel, onBack: () -> Unit) {
     }) { pad ->
         Column(modifier = Modifier.fillMaxSize().padding(pad).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box {
-                AsyncImage(model = user.profileImageUrl.ifEmpty { "https://ui-avatars.com/api/?name=${user.username}&background=random" }, contentDescription = null, modifier = Modifier.size(120.dp).clip(CircleShape).background(Color.LightGray), contentScale = ContentScale.Crop)
+                val imageUrl = user.profileImageUrl.ifEmpty { "https://www.w3schools.com/howto/img_avatar.png" }
+                AsyncImage(
+                    model = imageUrl,
+                    contentDescription = null,
+                    modifier = Modifier.size(120.dp).clip(CircleShape).background(Color.LightGray),
+                    contentScale = ContentScale.Crop
+                )
                 IconButton(onClick = { showCamera = true }, modifier = Modifier.align(Alignment.BottomEnd).size(36.dp).background(MaterialTheme.colorScheme.primary, CircleShape)) { Icon(Icons.Default.CameraAlt, null, modifier = Modifier.size(20.dp), tint = Color.White) }
             }
             Spacer(Modifier.height(16.dp))
@@ -431,13 +701,45 @@ fun ProfileItem(icon: ImageVector, label: String, value: String) {
 }
 
 @Composable
-fun ScanQRScreen(vm: BorrowerViewModel, onScanned: () -> Unit, onBack: () -> Unit) {
+fun ScanQRScreen(vm: BorrowerViewModel, expectedId: String? = null, onScanned: () -> Unit, onBack: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    val scope = rememberCoroutineScope()
+    val snack = remember { SnackbarHostState() }
+    val ui by vm.ui.collectAsState()
     var isScanning by remember { mutableStateOf(true) }
+    var localError by remember { mutableStateOf<String?>(null) }
+
+    // Handle global VM errors (like "Item not found")
+    LaunchedEffect(ui) {
+        if (ui is UiState.Error) {
+            scope.launch { 
+                snack.showSnackbar((ui as UiState.Error).message, duration = SnackbarDuration.Short) 
+            }
+            vm.resetUi()
+        }
+    }
+
+    // Handle local validation errors with custom short duration
+    LaunchedEffect(localError) {
+        localError?.let { msg ->
+            val job = scope.launch {
+                snack.showSnackbar(msg, duration = SnackbarDuration.Indefinite)
+            }
+            kotlinx.coroutines.delay(1500) // Display for 1.5 seconds
+            job.cancel()
+            localError = null
+        }
+    }
+
+    // Ensure VM state is cleared when leaving the scanner
+    DisposableEffect(Unit) {
+        onDispose { vm.resetUi() }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snack) },
         topBar = {
             @OptIn(ExperimentalMaterial3Api::class)
             TopAppBar(
@@ -496,10 +798,20 @@ fun ScanQRScreen(vm: BorrowerViewModel, onScanned: () -> Unit, onBack: () -> Uni
                                             }.decode(bitmap)
                                             val code = result.text
                                             if (!code.isNullOrEmpty()) {
-                                                isScanning = false
-                                                vm.fetchItem(code)
-                                                ContextCompat.getMainExecutor(context).execute {
-                                                    onScanned()
+                                                if (expectedId != null && code != expectedId) {
+                                                    // Wrong item scanned from details page
+                                                    localError = "The QR you are trying to scan is of different item than the item you are trying to borrow"
+                                                    // Reset isScanning after some delay to allow another attempt
+                                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                        isScanning = true
+                                                    }, 2000)
+                                                } else {
+                                                    isScanning = false
+                                                    vm.fetchItem(code) {
+                                                        ContextCompat.getMainExecutor(context).execute {
+                                                            onScanned()
+                                                        }
+                                                    }
                                                 }
                                             }
                                         } catch (e: Exception) {

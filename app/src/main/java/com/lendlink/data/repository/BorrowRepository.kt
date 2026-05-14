@@ -1,11 +1,8 @@
 package com.lendlink.data.repository
 
 import com.google.firebase.database.*
-import com.lendlink.data.local.BorrowDao
-import com.lendlink.data.local.LendHistoryDao
-import com.lendlink.data.local.BorrowHistoryDao
-import com.lendlink.data.local.LenderCreditHistoryDao
-import com.lendlink.data.local.BorrowerPaymentHistoryDao
+import com.google.firebase.storage.FirebaseStorage
+import com.lendlink.data.local.*
 import com.lendlink.data.model.*
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -19,9 +16,11 @@ class BorrowRepository(
     private val creditDao: LenderCreditHistoryDao,
     private val paymentDao: BorrowerPaymentHistoryDao,
     private val lendHistoryDao: LendHistoryDao,
-    private val borrowHistoryDao: BorrowHistoryDao
+    private val borrowHistoryDao: BorrowHistoryDao,
+    private val damageHistoryDao: DamageHistoryDao? = null
 ) {
     private val db = FirebaseDatabase.getInstance().reference
+    private val storage = FirebaseStorage.getInstance().reference
 
     // ── BORROW ITEM ───────────────────────────────────────────
     suspend fun borrowItem(item: Item, borrower: User): Result<Unit> = runCatching {
@@ -57,6 +56,7 @@ class BorrowRepository(
                 mutableData.child("borrowerLocation").value = borrower.locationAddress
                 mutableData.child("borrowedAt").value = now
                 mutableData.child("deadline").value = deadline
+                mutableData.child("recordId").value = recordId
 
                 return Transaction.success(mutableData)
             }
@@ -104,8 +104,9 @@ class BorrowRepository(
         )
         db.child("borrower_payment_history/$borrowerUid/${paymentLog.entryId}").setValue(paymentLog)
 
-        // 5. Send notification to lender
+        // 5. Send notifications
         sendNotification(lenderUid, "Item Borrowed", "${borrower.username} borrowed your ${item.name}", "borrowed")
+        sendNotification(borrowerUid, "Item Borrowed", "You have successfully borrowed ${item.name} from ${item.lenderName}", "borrowed")
     }
 
     // ── RETURN PROCESS ────────────────────────────────────────
@@ -136,6 +137,8 @@ class BorrowRepository(
             "items/${record.itemId}/borrowerLocation" to "",
             "items/${record.itemId}/borrowedAt" to 0L,
             "items/${record.itemId}/deadline" to 0L,
+            "items/${record.itemId}/recordId" to "",
+            "items/${record.itemId}/damageReport" to null,
             
             "borrow_records/${record.recordId}" to null,
             "return_requests/$requestId" to null
@@ -192,14 +195,15 @@ class BorrowRepository(
         
         val updates = hashMapOf<String, Any?>(
             "wallets/$borrowerUid/balance" to (balance - amount),
-            "wallets/$lenderUid/balance" to ServerValue.increment(amount)
+            "wallets/$lenderUid/balance" to ServerValue.increment(amount),
+            "borrow_records/${record.recordId}/penaltyAccrued" to ServerValue.increment(amount)
         )
         db.updateChildren(updates).await()
 
         val creditLog = LenderCreditHistory(
             entryId = db.child("lender_credit_history/$lenderUid").push().key ?: "",
             lenderId = lenderUid, amount = amount, type = "penalty",
-            description = "₩$amount penalty received from ${record.borrowerName} for ${record.itemName}",
+            description = "₩$amount penalty received from ${record.borrowerName} for ${record.itemName} (Overdue)",
             timestamp = now
         )
         db.child("lender_credit_history/$lenderUid/${creditLog.entryId}").setValue(creditLog)
@@ -207,10 +211,18 @@ class BorrowRepository(
         val paymentLog = BorrowerPaymentHistory(
             entryId = db.child("borrower_payment_history/$borrowerUid").push().key ?: "",
             borrowerId = borrowerUid, amount = amount, type = "penalty",
-            description = "₩$amount penalty paid for late return of ${record.itemName}",
+            description = "₩$amount penalty paid for late return of ${record.itemName} (Overdue)",
             timestamp = now
         )
         db.child("borrower_payment_history/$borrowerUid/${paymentLog.entryId}").setValue(paymentLog)
+
+        // Send in-app notification to borrower
+        sendNotification(
+            borrowerUid, 
+            "🚨 OVERDUE WARNING", 
+            "₩$amount deducted for '${record.itemName}'. Note: ₩1,000 will be deducted every 24 hours until the lender confirms the return.",
+            "penalty"
+        )
     }
 
     suspend fun sendReminder(record: BorrowRecord): Result<Unit> = runCatching {
@@ -244,6 +256,136 @@ class BorrowRepository(
             }
         }
         if (updates.isNotEmpty()) ref.updateChildren(updates).await()
+    }
+
+    // ── DAMAGE REPORTING (Phase 2) ──────────────────────────
+    suspend fun submitDamageReport(record: BorrowRecord, condition: String, desc: String, amount: Long, imageBytes: ByteArray?): Result<Unit> = runCatching {
+        var imageUrl = ""
+        if (imageBytes != null) {
+            val ref = storage.child("damage_images/${record.recordId}.jpg")
+            ref.putBytes(imageBytes).await()
+            imageUrl = ref.downloadUrl.await().toString()
+        }
+        
+        val report = DamageReport(condition, desc, amount, imageUrl, System.currentTimeMillis(), "pending")
+        val updates = hashMapOf<String, Any?>(
+            "borrow_records/${record.recordId}/status" to "damaged",
+            "borrow_records/${record.recordId}/damageReport" to report,
+            "items/${record.itemId}/status" to "damaged",
+            "items/${record.itemId}/damageReport" to report
+        )
+        db.updateChildren(updates).await()
+        
+        sendNotification(record.borrowerId, "Damage Reported", "Lender reported damage for '${record.itemName}'. View details to respond.", "damage_report")
+        sendNotification(record.lenderId, "Report Submitted", "Damage report for '${record.itemName}' sent to borrower.", "damage_report")
+    }
+
+    suspend fun cancelDamageReport(record: BorrowRecord): Result<Unit> = runCatching {
+        // As per checklist: Cancel report and accept return normally
+        acceptReturn(record, "cancelled_report") // Pass dummy requestId or handle in acceptReturn
+    }
+
+    suspend fun payDamageCharge(record: BorrowRecord, charge: Long, borrower: User): Result<Unit> = runCatching {
+        val borrowerUid = borrower.uid
+        val lenderUid = record.lenderId
+        
+        // 1. Pre-check balance
+        val walletSnap = db.child("wallets/$borrowerUid/balance").get().await()
+        val balance = walletSnap.getValue(Long::class.java) ?: 0L
+        if (balance < charge) {
+            // Step 9: Notify lender of insufficient funds and request negotiation
+            sendNotification(lenderUid, "Payment Failed", "${borrower.username} has insufficient credits to pay damage charge. Negotiation requested.", "negotiation")
+            throw Exception("Insufficient credits (Need ₩$charge)")
+        }
+
+        val now = System.currentTimeMillis()
+        // 2. Multi-path update for payment and finalizing return
+        val updates = hashMapOf<String, Any?>(
+            "wallets/$borrowerUid/balance" to ServerValue.increment(-charge),
+            "wallets/$lenderUid/balance" to ServerValue.increment(charge),
+            "items/${record.itemId}/status" to "available",
+            "items/${record.itemId}/borrowerId" to "",
+            "items/${record.itemId}/borrowedAt" to 0L,
+            "items/${record.itemId}/recordId" to "",
+            "items/${record.itemId}/damageReport" to null,
+            "borrow_records/${record.recordId}" to null
+        )
+        db.updateChildren(updates).await()
+
+        // 3. Log to histories (Credit/Payment/Damage History)
+        val creditLog = LenderCreditHistory(
+            entryId = db.child("lender_credit_history/$lenderUid").push().key ?: "",
+            lenderId = lenderUid, amount = charge, type = "damage_charge",
+            description = "₩$charge paid by ${borrower.username} for damaging the '${record.itemName}'",
+            timestamp = now
+        )
+        db.child("lender_credit_history/$lenderUid/${creditLog.entryId}").setValue(creditLog)
+
+        val paymentLog = BorrowerPaymentHistory(
+            entryId = db.child("borrower_payment_history/$borrowerUid").push().key ?: "",
+            borrowerId = borrowerUid, amount = charge, type = "damage_charge",
+            description = "₩$charge paid to ${record.lenderName} as damage charge for damaging the '${record.itemName}'",
+            timestamp = now
+        )
+        db.child("borrower_payment_history/$borrowerUid/${paymentLog.entryId}").setValue(paymentLog)
+
+        val damageH = DamageHistory(
+            historyId = record.recordId, itemId = record.itemId, itemName = record.itemName,
+            lenderId = lenderUid, lenderName = record.lenderName,
+            borrowerId = borrowerUid, borrowerName = borrower.username,
+            damageImageUrl = record.damageReport?.damageImageUrl ?: "",
+            condition = record.damageReport?.condition ?: "", description = record.damageReport?.description ?: "",
+            chargeAmount = charge, paymentStatus = "Paid", timestamp = now
+        )
+        db.child("damage_history/${lenderUid}/${record.recordId}").setValue(damageH)
+        db.child("damage_history/${borrowerUid}/${record.recordId}").setValue(damageH)
+
+        sendNotification(lenderUid, "Damage Charge Paid", "${borrower.username} paid ₩$charge for '${record.itemName}'. Return completed.", "payment")
+        sendNotification(borrowerUid, "Damage Payment Success", "₩$charge paid to ${record.lenderName}. Return completed.", "payment")
+    }
+
+    suspend fun requestNegotiation(record: BorrowRecord, borrowerName: String) = runCatching {
+        val updates = hashMapOf<String, Any?>(
+            "borrow_records/${record.recordId}/status" to "negotiating",
+            "items/${record.itemId}/status" to "negotiating"
+        )
+        db.updateChildren(updates).await()
+        sendNotification(record.lenderId, "Negotiation Requested", "$borrowerName wants to negotiate the damage report for '${record.itemName}'.", "negotiation")
+    }
+
+    suspend fun completeNegotiation(record: BorrowRecord): Result<Unit> = runCatching {
+        val now = System.currentTimeMillis()
+        val updates = hashMapOf<String, Any?>(
+            "items/${record.itemId}/status" to "available",
+            "items/${record.itemId}/borrowerId" to "",
+            "items/${record.itemId}/recordId" to "",
+            "items/${record.itemId}/damageReport" to null,
+            "borrow_records/${record.recordId}" to null
+        )
+        db.updateChildren(updates).await()
+
+        val damageH = DamageHistory(
+            historyId = record.recordId, itemId = record.itemId, itemName = record.itemName,
+            lenderId = record.lenderId, lenderName = record.lenderName,
+            borrowerId = record.borrowerId, borrowerName = record.borrowerName,
+            damageImageUrl = record.damageReport?.damageImageUrl ?: "",
+            condition = record.damageReport?.condition ?: "", description = record.damageReport?.description ?: "",
+            chargeAmount = record.damageReport?.chargeAmount ?: 0L, paymentStatus = "Negotiated", timestamp = now
+        )
+        db.child("damage_history/${record.lenderId}/${record.recordId}").setValue(damageH)
+        db.child("damage_history/${record.borrowerId}/${record.recordId}").setValue(damageH)
+
+        sendNotification(record.borrowerId, "Negotiation Completed", "Lender marked negotiation for '${record.itemName}' as completed. Return finalized.", "negotiation")
+        sendNotification(record.lenderId, "Negotiation Finalized", "Return for '${record.itemName}' completed after negotiation.", "negotiation")
+    }
+
+    fun observeDamageHistory(uid: String): Flow<List<DamageHistory>> = callbackFlow {
+        val q = db.child("damage_history/$uid").orderByChild("timestamp")
+        val l = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { trySend(s.children.mapNotNull { it.getValue(DamageHistory::class.java) }.reversed()) }
+            override fun onCancelled(e: DatabaseError) { if (e.code == DatabaseError.PERMISSION_DENIED) close() else close(e.toException()) }
+        }
+        q.addValueEventListener(l); awaitClose { q.removeEventListener(l) }
     }
 
     suspend fun getAllActive(): List<BorrowRecord> {

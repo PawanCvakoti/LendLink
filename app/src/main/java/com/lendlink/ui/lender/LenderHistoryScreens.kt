@@ -21,11 +21,13 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.lendlink.data.model.LenderCreditHistory
 import com.lendlink.data.model.LendHistory
+import com.lendlink.ui.common.WalletCard
 import com.lendlink.ui.common.fmtDate
 import com.lendlink.ui.common.fmtDateTime
 import com.lendlink.ui.common.krw
 import com.lendlink.ui.theme.AvailGreen
 import com.lendlink.ui.theme.LentOrange
+import com.lendlink.ui.theme.OverdueRed
 import com.lendlink.viewmodel.LenderViewModel
 import java.text.SimpleDateFormat
 import java.util.*
@@ -38,6 +40,7 @@ fun LenderCreditHistoryScreen(vm: LenderViewModel, onBack: () -> Unit) {
     val wallet by vm.wallet.collectAsState()
     val totalBorrow = history.filter { it.type == "borrow_payment" }.sumOf { it.amount }
     val totalPenalty = history.filter { it.type == "penalty" }.sumOf { it.amount }
+    val totalDamage = history.filter { it.type == "damage_charge" }.sumOf { it.amount }
 
     Scaffold(topBar = {
         TopAppBar(title = { Text("Credit History") },
@@ -46,23 +49,25 @@ fun LenderCreditHistoryScreen(vm: LenderViewModel, onBack: () -> Unit) {
                 titleContentColor = Color.White, navigationIconContentColor = Color.White))
     }) { pad ->
         Column(modifier = Modifier.fillMaxSize().padding(pad)) {
-            // Summary card
-            Card(modifier = Modifier.fillMaxWidth().padding(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary),
-                shape = RoundedCornerShape(16.dp)) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Text("Total Balance", fontSize = 11.sp, color = Color.White.copy(.7f), letterSpacing = 1.sp)
-                    Text(krw(wallet), fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                    Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                        Column {
-                            Text("From borrows", fontSize = 10.sp, color = Color.White.copy(.6f))
-                            Text(krw(totalBorrow), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                        }
-                        Column {
-                            Text("From penalties", fontSize = 10.sp, color = Color.White.copy(.6f))
-                            Text(krw(totalPenalty), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                        }
+            // Reusing WalletCard for consistency
+            WalletCard(balance = wallet, ownerName = "Lender Wallet", label = "Total Earnings")
+
+            Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 0.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) {
+                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                        Text("From borrows", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        Text(krw(totalBorrow), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                    }
+                    VerticalDivider(modifier = Modifier.height(32.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                        Text("From penalties", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        Text(krw(totalPenalty), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = LentOrange)
+                    }
+                    VerticalDivider(modifier = Modifier.height(32.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                        Text("Damage credits", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        Text(krw(totalDamage), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = OverdueRed)
                     }
                 }
             }
@@ -101,9 +106,18 @@ fun LenderCreditHistoryScreen(vm: LenderViewModel, onBack: () -> Unit) {
 
 @Composable
 private fun CreditEntryRow(entry: LenderCreditHistory) {
-    val isBorrow = entry.type == "borrow_payment"
-    val iconTint = if (isBorrow) AvailGreen else LentOrange
-    val icon = if (isBorrow) Icons.Default.ArrowDownward else Icons.Default.Warning
+    val iconTint = when (entry.type) {
+        "borrow_payment" -> AvailGreen
+        "penalty" -> LentOrange
+        "damage_charge" -> OverdueRed
+        else -> MaterialTheme.colorScheme.primary
+    }
+    val icon = when (entry.type) {
+        "borrow_payment" -> Icons.Default.ArrowDownward
+        "penalty" -> Icons.Default.Warning
+        "damage_charge" -> Icons.Default.ReportProblem
+        else -> Icons.Default.Payments
+    }
 
     Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically) {

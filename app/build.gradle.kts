@@ -116,11 +116,11 @@ dependencies {
     // WorkManager (background tasks)
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-    // CameraX (item photo capture)
-    implementation("androidx.camera:camera-core:1.3.4")
-    implementation("androidx.camera:camera-camera2:1.3.4")
-    implementation("androidx.camera:camera-lifecycle:1.3.4")
-    implementation("androidx.camera:camera-view:1.3.4")
+    // CameraX (item photo capture) - Updated to 1.4.2 for 16KB support
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
 
     // QR Code - ZXing
     implementation("com.google.zxing:core:3.5.3")
@@ -148,5 +148,8 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     // Splash Screen API
-    implementation("androidx.core:core-splashscreen:1.0.1")
+    implementation(libs.androidx.core.splashscreen)
+
+    // Gson
+    implementation(libs.gson)
 }

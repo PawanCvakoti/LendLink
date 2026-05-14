@@ -14,6 +14,12 @@
 # Data models (Firebase deserialisation)
 -keep class com.lendlink.data.model.** { *; }
 
+# Gson
+-keepattributes Signature
+-keepattributes *Annotation*
+-dontwarn com.google.gson.**
+-keep class com.google.gson.** { *; }
+
 # WorkManager
 -keep class * extends androidx.work.Worker
 -keep class * extends androidx.work.CoroutineWorker

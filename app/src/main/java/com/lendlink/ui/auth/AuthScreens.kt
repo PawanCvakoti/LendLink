@@ -51,12 +51,26 @@ fun LoginScreen(
     LaunchedEffect(state) {
         when (val s = state) {
             is AuthState.Success -> { onSuccess(s.user.role); vm.reset() }
-            is AuthState.Error -> { snack.showSnackbar(s.msg); vm.reset() }
+            is AuthState.Error -> { 
+                snack.showSnackbar(s.msg)
+                vm.reset() 
+            }
             else -> {}
         }
     }
 
-    Scaffold(snackbarHost = { SnackbarHost(snack) }) { pad ->
+    Scaffold(
+        snackbarHost = { 
+            SnackbarHost(snack) { data ->
+                val isAccountNotFound = data.visuals.message.contains("Account not found", ignoreCase = true)
+                Snackbar(
+                    snackbarData = data,
+                    containerColor = if (isAccountNotFound) Color(0xFFD32F2F) else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (isAccountNotFound) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } 
+        }
+    ) { pad ->
         Column(
             modifier = Modifier.fillMaxSize().padding(pad).padding(horizontal = 24.dp)
                 .verticalScroll(rememberScrollState()),

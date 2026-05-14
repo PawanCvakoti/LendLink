@@ -110,8 +110,6 @@ class AuthViewModel(app: Application) : AndroidViewModel(app) {
             val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
             repo.updateProfileImage(uid, bytes)
                 .onSuccess { url ->
-                    // Important: Reset state to Idle instead of Success(user) if we don't want to trigger navigation/hiding
-                    // Or better, update the current user flow and keep state Idle/Success message
                     _state.value = AuthState.Idle
                 }
                 .onFailure { 
@@ -210,22 +208,14 @@ class LenderViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value = UiState.Error("Session expired. Log in again.")
             return@launch
         }
-        
         val bytes = uri?.let { u ->
-            try {
-                getApplication<Application>().contentResolver.openInputStream(u)?.use { it.readBytes() }
-            } catch (_: Exception) {
-                null
-            }
+            try { getApplication<Application>().contentResolver.openInputStream(u)?.use { it.readBytes() } } catch (_: Exception) { null }
         }
-
-        // Ensure category belongs to this lender
         val currentCats = categories.value.map { it.name }
         if (item.category != "General" && item.category !in currentCats) {
              _ui.value = UiState.Error("Invalid category. Please select or add a category first.")
              return@launch
         }
-
         val fullItem = item.copy(
             lenderId = profile.uid, 
             lenderName = profile.username,
@@ -236,27 +226,14 @@ class LenderViewModel(app: Application) : AndroidViewModel(app) {
         )
         itemRepo.addItem(fullItem, bytes)
             .onSuccess { _ui.value = UiState.Success("Item added successfully!") }
-            .onFailure { _ui.value = UiState.Error(it.message ?: "Failed to add item. Check permissions.") }
+            .onFailure { _ui.value = UiState.Error(it.message ?: "Failed to add item.") }
     }
 
     fun updateItem(item: Item, uri: Uri?) = viewModelScope.launch {
         _ui.value = UiState.Loading
-        
         val bytes = uri?.let { u ->
-            try {
-                getApplication<Application>().contentResolver.openInputStream(u)?.use { it.readBytes() }
-            } catch (_: Exception) {
-                null
-            }
+            try { getApplication<Application>().contentResolver.openInputStream(u)?.use { it.readBytes() } } catch (_: Exception) { null }
         }
-
-        // Ensure category belongs to this lender
-        val currentCats = categories.value.map { it.name }
-        if (item.category != "General" && item.category !in currentCats) {
-             _ui.value = UiState.Error("Invalid category selected.")
-             return@launch
-        }
-
         itemRepo.updateItem(item, bytes)
             .onSuccess { _ui.value = UiState.Success("Updated successfully") }
             .onFailure { _ui.value = UiState.Error(it.message ?: "Update failed") }
@@ -287,10 +264,29 @@ class LenderViewModel(app: Application) : AndroidViewModel(app) {
     fun acceptReturn(r: BorrowRecord, reqId: String) = viewModelScope.launch { _ui.value = UiState.Loading; borrowRepo.acceptReturn(r, reqId).onSuccess { _ui.value = UiState.Success("Accepted") } }
 
     fun markNotificationsRead() = viewModelScope.launch {
-        if (_uid.value.isNotEmpty()) {
-            borrowRepo.markNotificationsRead(_uid.value)
-        }
+        if (_uid.value.isNotEmpty()) borrowRepo.markNotificationsRead(_uid.value)
     }
+
+    // ── DAMAGE REPORTING (Lender) ───────────────────────────
+    fun submitDamageReport(record: BorrowRecord, condition: String, desc: String, amount: Long, uri: Uri?) = viewModelScope.launch {
+        _ui.value = UiState.Loading
+        val bytes = uri?.let { u ->
+            try { getApplication<Application>().contentResolver.openInputStream(u)?.use { it.readBytes() } } catch (_: Exception) { null }
+        }
+        borrowRepo.submitDamageReport(record, condition, desc, amount, bytes)
+            .onSuccess { _ui.value = UiState.Success("Damage report submitted") }
+            .onFailure { _ui.value = UiState.Error(it.message ?: "Failed to submit report") }
+    }
+
+    fun completeNegotiation(record: BorrowRecord) = viewModelScope.launch {
+        _ui.value = UiState.Loading
+        borrowRepo.completeNegotiation(record)
+            .onSuccess { _ui.value = UiState.Success("Negotiation completed") }
+            .onFailure { _ui.value = UiState.Error(it.message ?: "Failed to complete") }
+    }
+
+    val damageHistory: StateFlow<List<DamageHistory>> = _uid.flatMapLatest { borrowRepo.observeDamageHistory(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 }
 
 class BorrowerViewModel(app: Application) : AndroidViewModel(app) {
@@ -383,15 +379,20 @@ class BorrowerViewModel(app: Application) : AndroidViewModel(app) {
     fun selectCatActive(cat: String) { _selectedCatActive.value = cat }
     fun updateSearchQueryActive(q: String) { _searchQueryActive.value = q }
     fun resetUi() { _ui.value = UiState.Idle }
+    fun setUiError(msg: String) { _ui.value = UiState.Error(msg) }
     fun clearScanned() { _scanned.value = null }
 
-    fun fetchItem(id: String) = viewModelScope.launch {
+    fun fetchItem(id: String, onFetched: () -> Unit) = viewModelScope.launch {
         val item = itemRepo.getItemById(id)
         when {
             item == null -> _ui.value = UiState.Error("Item not found")
             item.status != "available" -> _ui.value = UiState.Error("This item is currently not available.")
             item.lenderId == _uid.value -> _ui.value = UiState.Error("You cannot borrow your own item.")
-            else -> { _scanned.value = item; _ui.value = UiState.Idle }
+            else -> { 
+                _scanned.value = item
+                _ui.value = UiState.Idle 
+                onFetched()
+            }
         }
     }
 
@@ -411,8 +412,26 @@ class BorrowerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun markNotificationsRead() = viewModelScope.launch {
-        if (_uid.value.isNotEmpty()) {
-            borrowRepo.markNotificationsRead(_uid.value)
-        }
+        if (_uid.value.isNotEmpty()) borrowRepo.markNotificationsRead(_uid.value)
     }
+
+    // ── DAMAGE REPORTING (Borrower) ─────────────────────────
+    fun payDamageCharge(record: BorrowRecord, charge: Long) = viewModelScope.launch {
+        val user = _userProfile.value ?: return@launch
+        _ui.value = UiState.Loading
+        borrowRepo.payDamageCharge(record, charge, user)
+            .onSuccess { _ui.value = UiState.Success("Damage charge paid successfully") }
+            .onFailure { _ui.value = UiState.Error(it.message ?: "Payment failed") }
+    }
+
+    fun requestNegotiation(record: BorrowRecord) = viewModelScope.launch {
+        _ui.value = UiState.Loading
+        val name = _userProfile.value?.username ?: "Borrower"
+        borrowRepo.requestNegotiation(record, name)
+            .onSuccess { _ui.value = UiState.Success("Negotiation request sent to lender") }
+            .onFailure { _ui.value = UiState.Error(it.message ?: "Request failed") }
+    }
+
+    val damageHistory: StateFlow<List<DamageHistory>> = _uid.flatMapLatest { borrowRepo.observeDamageHistory(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 }

@@ -72,15 +72,23 @@ interface BorrowHistoryDao {
     @Upsert suspend fun upsert(e: BorrowHistory)
 }
 
+@Dao
+interface DamageHistoryDao {
+    @Query("SELECT * FROM damage_history WHERE lenderId = :uid OR borrowerId = :uid ORDER BY timestamp DESC")
+    fun getByUser(uid: String): Flow<List<DamageHistory>>
+    @Upsert suspend fun upsert(e: DamageHistory)
+}
+
 @Database(
     entities = [
         Item::class, BorrowRecord::class,
         LenderCreditHistory::class, BorrowerPaymentHistory::class,
-        LendHistory::class, BorrowHistory::class
+        LendHistory::class, BorrowHistory::class, DamageHistory::class
     ],
-    version = 2,
+    version = 4,
     exportSchema = false
 )
+@TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun itemDao(): ItemDao
     abstract fun borrowDao(): BorrowDao
@@ -88,6 +96,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun borrowerPaymentHistoryDao(): BorrowerPaymentHistoryDao
     abstract fun lendHistoryDao(): LendHistoryDao
     abstract fun borrowHistoryDao(): BorrowHistoryDao
+    abstract fun damageHistoryDao(): DamageHistoryDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null

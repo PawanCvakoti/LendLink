@@ -49,6 +49,7 @@ import com.lendlink.data.model.*
 import com.lendlink.ui.common.*
 import com.lendlink.ui.theme.*
 import com.lendlink.viewmodel.*
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -64,6 +65,7 @@ fun LenderDashboard(
     onNotifications: () -> Unit,
     onCreditHistory: () -> Unit,
     onLendHistory: () -> Unit,
+    onDamageHistory: () -> Unit,
     onManageCategories: () -> Unit,
     onProfile: () -> Unit
 ) {
@@ -78,16 +80,17 @@ fun LenderDashboard(
     val unreadCount = notifications.count { !it.read }
     val ui by vm.ui.collectAsState()
     val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
     var menu by remember { mutableStateOf(false) }
 
     LaunchedEffect(ui) {
         val s = ui
         if (s is UiState.Success) { 
-            snack.showSnackbar(s.message)
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
             vm.resetUi()
         } else if (s is UiState.Error) { 
-            snack.showSnackbar(s.message)
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
             vm.resetUi() 
         }
     }
@@ -116,6 +119,7 @@ fun LenderDashboard(
                             DropdownMenuItem(text = { Text("My Profile") }, leadingIcon = { Icon(Icons.Default.Person, null) }, onClick = { menu = false; onProfile() })
                             DropdownMenuItem(text = { Text("Credit History") }, leadingIcon = { Icon(Icons.Default.AccountBalanceWallet, null) }, onClick = { menu = false; onCreditHistory() })
                             DropdownMenuItem(text = { Text("Lend History") }, leadingIcon = { Icon(Icons.Default.History, null) }, onClick = { menu = false; onLendHistory() })
+                            DropdownMenuItem(text = { Text("Damage History") }, leadingIcon = { Icon(Icons.Default.Warning, null) }, onClick = { menu = false; onDamageHistory() })
                             DropdownMenuItem(text = { Text("Manage Categories") }, leadingIcon = { Icon(Icons.Default.Category, null) }, onClick = { menu = false; onManageCategories() })
                             HorizontalDivider()
                             DropdownMenuItem(
@@ -198,14 +202,34 @@ private fun LentTab(items: List<Item>, onItem: (Item) -> Unit) {
     else LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items(items, key = { it.itemId }) { item ->
             val overdue = item.deadline > 0L && System.currentTimeMillis() > item.deadline
-            Card(modifier = Modifier.fillMaxWidth().clickable { onItem(item) }, elevation = CardDefaults.cardElevation(2.dp), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = if (overdue) Color(0xFFFFF8F6) else MaterialTheme.colorScheme.surface)) {
+            Card(
+                modifier = Modifier.fillMaxWidth().clickable { onItem(item) },
+                elevation = CardDefaults.cardElevation(2.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (overdue) Color(0xFFFFF8F6) else MaterialTheme.colorScheme.surface,
+                    contentColor = if (overdue) Color.Black else MaterialTheme.colorScheme.onSurface
+                )
+            ) {
                 Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     ItemImage(item.imageUrl, size = 64)
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(item.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text("By: ${item.borrowerName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.6f))
-                        Text("Due: ${fmtDate(item.deadline)}", style = MaterialTheme.typography.bodySmall, color = if (overdue) OverdueRed else MaterialTheme.colorScheme.onSurface.copy(.6f))
+                        Text(
+                            item.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            "By: ${item.borrowerName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (overdue) Color.Black.copy(.7f) else MaterialTheme.colorScheme.onSurface.copy(.6f)
+                        )
+                        Text(
+                            "Due: ${fmtDate(item.deadline)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (overdue) OverdueRed else MaterialTheme.colorScheme.onSurface.copy(.6f)
+                        )
                         Spacer(Modifier.height(4.dp))
                         StatusChip(if (overdue) "Overdue" else "Lent", if (overdue) OverdueRed else LentOrange)
                     }
@@ -253,18 +277,20 @@ fun AddItemScreen(vm: LenderViewModel, existing: Item? = null, onBack: () -> Uni
     val categories by vm.categories.collectAsState()
     val uiState by vm.ui.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(uiState) {
         val s = uiState
         if (s is UiState.Success) {
-            snackbarHostState.showSnackbar(s.message)
             if (s.message == "Updated successfully" || s.message == "Item added successfully!") {
+                vm.resetUi()
                 onBack()
             } else {
+                scope.launch { snackbarHostState.showSnackbar(s.message, duration = SnackbarDuration.Short) }
                 vm.resetUi()
             }
         } else if (s is UiState.Error) {
-            snackbarHostState.showSnackbar(s.message)
+            scope.launch { snackbarHostState.showSnackbar(s.message, duration = SnackbarDuration.Short) }
             vm.resetUi()
         }
     }
@@ -439,13 +465,19 @@ fun CategoryManagerScreen(vm: LenderViewModel, onBack: () -> Unit) {
     val categories by vm.categories.collectAsState()
     val ui by vm.ui.collectAsState()
     val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var showAdd by remember { mutableStateOf(false) }
     var editCat by remember { mutableStateOf<Category?>(null) }
     var newName by remember { mutableStateOf("") }
     LaunchedEffect(ui) {
         val s = ui
-        if (s is UiState.Success) { snack.showSnackbar(s.message); vm.resetUi() }
-        else if (s is UiState.Error) { snack.showSnackbar(s.message); vm.resetUi() }
+        if (s is UiState.Success) { 
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
+            vm.resetUi() 
+        } else if (s is UiState.Error) { 
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
+            vm.resetUi() 
+        }
     }
     if (showAdd) {
         AlertDialog(
@@ -522,11 +554,12 @@ fun LenderAvailableDetailScreen(itemId: String, vm: LenderViewModel, onBack: () 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     val uiState by vm.ui.collectAsState()
     val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(uiState) {
         val s = uiState
         if (s is UiState.Success && s.message == "Updated successfully") {
-            snack.showSnackbar(s.message)
+            scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
             vm.resetUi()
         }
     }
@@ -550,16 +583,10 @@ fun LenderAvailableDetailScreen(itemId: String, vm: LenderViewModel, onBack: () 
         )
     }
 
-    val itemStatus = item.status
-    
     // Auto-exit if item is no longer available (e.g. borrowed or deleted)
-    LaunchedEffect(itemStatus) {
-        if (itemStatus != "available") {
-            // Check if item is still in the list to avoid crashing if it was deleted
-            val items = vm.available.value
-            if (items.none { it.itemId == item.itemId }) {
-                onBack()
-            }
+    LaunchedEffect(item.status) {
+        if (item.status != "available") {
+            onBack()
         }
     }
 
@@ -681,15 +708,21 @@ fun LenderAvailableDetailScreen(itemId: String, vm: LenderViewModel, onBack: () 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, onBack: () -> Unit) {
+fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, onBack: () -> Unit, onReportDamage: (String) -> Unit, onViewDamage: (String) -> Unit) {
     val uiState by vm.ui.collectAsState()
     val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     
     LaunchedEffect(uiState) {
         val s = uiState
         if (s is UiState.Success) {
-            snack.showSnackbar(s.message)
-            if (s.message == "Accepted") onBack()
+            if (s.message == "Accepted") {
+                vm.resetUi()
+                onBack()
+            } else {
+                scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
+                vm.resetUi()
+            }
         }
     }
 
@@ -708,7 +741,7 @@ fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, o
             ItemImage(item.imageUrl, modifier = Modifier.fillMaxWidth().height(240.dp), clip = false)
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(item.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                StatusChip("Lent Out", LentOrange)
+                StatusChip(if (item.status == "damaged") "Damaged" else if (item.status == "negotiating") "Negotiating" else "Lent Out", if (item.status == "lent") LentOrange else OverdueRed)
                 HorizontalDivider()
                 DetailRow("Category", item.category.ifBlank { "General" })
                 HorizontalDivider()
@@ -765,44 +798,60 @@ fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, o
                                 lineHeight = 20.sp
                             )
                             
-                            Button(
-                                onClick = {
-                                    val record = BorrowRecord(
-                                        recordId = req.recordId,
-                                        itemId = item.itemId,
-                                        itemName = item.name,
-                                        itemImageUrl = item.imageUrl,
-                                        itemCategory = item.category,
-                                        lenderId = item.lenderId,
-                                        lenderName = item.lenderName,
-                                        lenderPhone = item.lenderPhone,
-                                        lenderLocation = item.lenderLocation,
-                                        borrowerId = item.borrowerId,
-                                        borrowerName = item.borrowerName,
-                                        borrowerPhone = item.borrowerPhone,
-                                        borrowerLocation = item.borrowerLocation,
-                                        price = item.price,
-                                        borrowedAt = item.borrowedAt,
-                                        deadline = item.deadline
-                                    )
-                                    vm.acceptReturn(record, req.requestId) 
-                                },
-                                modifier = Modifier.fillMaxWidth().height(54.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = Color.White
-                                ),
-                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                                enabled = uiState !is UiState.Loading
-                            ) {
-                                if (uiState is UiState.Loading) {
-                                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                                } else {
-                                    Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(20.dp))
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("Confirm & Accept Return", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Button(
+                                    onClick = {
+                                        val record = BorrowRecord(
+                                            recordId = req.recordId,
+                                            itemId = item.itemId,
+                                            itemName = item.name,
+                                            itemImageUrl = item.imageUrl,
+                                            itemCategory = item.category,
+                                            lenderId = item.lenderId,
+                                            lenderName = item.lenderName,
+                                            lenderPhone = item.lenderPhone,
+                                            lenderLocation = item.lenderLocation,
+                                            borrowerId = item.borrowerId,
+                                            borrowerName = item.borrowerName,
+                                            borrowerPhone = item.borrowerPhone,
+                                            borrowerLocation = item.borrowerLocation,
+                                            price = item.price,
+                                            borrowedAt = item.borrowedAt,
+                                            deadline = item.deadline
+                                        )
+                                        vm.acceptReturn(record, req.requestId) 
+                                    },
+                                    modifier = Modifier.weight(1f).height(54.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    enabled = uiState !is UiState.Loading
+                                ) {
+                                    if (uiState is UiState.Loading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
+                                    else Text("Confirm & Accept Return", fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                                 }
+                                
+                                Spacer(Modifier.width(8.dp))
+                                
+                                OutlinedButton(
+                                    onClick = { 
+                                        onReportDamage(req.recordId)
+                                    },
+                                    modifier = Modifier.weight(1f).height(54.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error)
+                                ) {
+                                    Text("Report Damage", fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                                }
+                            }
+                        }
+                    }
+                } else if (item.status == "damaged" || item.status == "negotiating") {
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = OverdueRed.copy(0.1f))) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Damage report has been created and sent to borrower", color = OverdueRed, fontWeight = FontWeight.Bold)
+                            Button(onClick = { onViewDamage(item.recordId) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("View Report")
                             }
                         }
                     }

@@ -11,6 +11,7 @@ import androidx.navigation.compose.*
 import com.lendlink.navigation.NavGraph
 import com.lendlink.ui.theme.LendLinkTheme
 import com.lendlink.viewmodel.*
+import com.lendlink.worker.WorkerScheduler
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -19,6 +20,9 @@ class MainActivity : ComponentActivity() {
         
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Schedule background workers (penalty & deadline checks)
+        WorkerScheduler.schedule(this)
 
         setContent {
             LendLinkTheme {

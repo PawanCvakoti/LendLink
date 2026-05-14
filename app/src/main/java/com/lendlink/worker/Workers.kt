@@ -23,20 +23,30 @@ class DeadlineCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWor
             val db = AppDatabase.get(applicationContext)
             val repo = BorrowRepository(db.borrowDao(), db.lenderCreditHistoryDao(),
                 db.borrowerPaymentHistoryDao(), db.lendHistoryDao(), db.borrowHistoryDao())
-            val records = repo.getAllActive()
+            val records = repo.getAllActive().filter { it.status == "active" }
             val now = System.currentTimeMillis()
             records.forEach { rec ->
                 val remaining = rec.deadline - now
-                val hrs = remaining / 3_600_000L
+                val hrs = (remaining / 3_600_000L)
                 when {
                     remaining > 0 && hrs <= 24 && hrs > 10 ->
                         notify(applicationContext, rec.recordId.hashCode(),
                             "⏰ Return Reminder — 24 Hours Left",
-                            "Please return '${rec.itemName}' to ${rec.lenderName}")
+                            "Please return '${rec.itemName}'. Overdue items are charged ₩$PENALTY_AMOUNT every 24 hours.")
                     remaining > 0 && hrs <= 10 ->
                         notify(applicationContext, (rec.recordId + hrs).hashCode(),
                             "⚠️ ${hrs}h Left to Return",
-                            "Return '${rec.itemName}' to ${rec.lenderName} ASAP!")
+                            "Return '${rec.itemName}' ASAP! Daily penalties apply after the deadline.")
+                    remaining < 0 -> {
+                        // Periodic reminder for every 24 hours of delay
+                        val hrsOverdue = Math.abs(hrs)
+                        if (hrsOverdue > 0 && hrsOverdue % 24 == 0L) {
+                            val days = hrsOverdue / 24
+                            notify(applicationContext, (rec.recordId + "_overdue_daily").hashCode(),
+                                "🚨 ITEM OVERDUE - Day $days",
+                                "Your borrow of '${rec.itemName}' is $days day(s) late. ₩$PENALTY_AMOUNT is deducted every 24 hours until returned.")
+                        }
+                    }
                 }
             }
             Result.success()
@@ -53,10 +63,17 @@ class PenaltyWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                 db.borrowerPaymentHistoryDao(), db.lendHistoryDao(), db.borrowHistoryDao())
             val now = System.currentTimeMillis()
             repo.getAllActive().filter { it.deadline < now && it.status == "active" }.forEach { rec ->
-                repo.applyPenalty(rec, PENALTY_AMOUNT)
-                notify(applicationContext, (rec.recordId + "_pen").hashCode(),
-                    "💸 Overdue Penalty Charged",
-                    "₩${PENALTY_AMOUNT} deducted for overdue '${rec.itemName}'. Return it now!")
+                // Calculate how many 24-hour periods have passed since the deadline
+                val daysOverdue = (now - rec.deadline) / (24 * 60 * 60 * 1000)
+                val expectedTotalPenalty = daysOverdue * PENALTY_AMOUNT
+                val amountToChargeNow = expectedTotalPenalty - rec.penaltyAccrued
+
+                if (amountToChargeNow > 0) {
+                    repo.applyPenalty(rec, amountToChargeNow)
+                    notify(applicationContext, (rec.recordId + "_pen").hashCode(),
+                        "🚨 Item Overdue - Penalty Charged",
+                        "₩$amountToChargeNow deducted for '${rec.itemName}'. A penalty of ₩$PENALTY_AMOUNT will be charged every 24 hours until returned.")
+                }
             }
             Result.success()
         } catch (_: Exception) { Result.retry() }

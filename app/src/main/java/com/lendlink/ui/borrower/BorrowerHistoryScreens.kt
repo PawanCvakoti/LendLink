@@ -38,6 +38,7 @@ fun BorrowerPaymentHistoryScreen(vm: BorrowerViewModel, onBack: () -> Unit) {
     val wallet by vm.wallet.collectAsState()
     val totalBorrow = history.filter { it.type == "payment" }.sumOf { it.amount }
     val totalPenalty = history.filter { it.type == "penalty" }.sumOf { it.amount }
+    val totalDamage = history.filter { it.type == "damage_charge" }.sumOf { it.amount }
 
     Scaffold(topBar = {
         TopAppBar(title = { Text("Payment History") },
@@ -52,14 +53,19 @@ fun BorrowerPaymentHistoryScreen(vm: BorrowerViewModel, onBack: () -> Unit) {
             Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 0.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Borrow payments", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                        Text("Borrow payments", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         Text(krw(totalBorrow), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
                     }
-                    VerticalDivider(modifier = Modifier.height(32.dp).padding(horizontal = 16.dp))
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Penalties paid", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    VerticalDivider(modifier = Modifier.height(32.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                        Text("Penalties paid", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         Text(krw(totalPenalty), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = OverdueRed)
+                    }
+                    VerticalDivider(modifier = Modifier.height(32.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                        Text("Damage charges", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        Text(krw(totalDamage), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = OverdueRed)
                     }
                 }
             }
@@ -100,7 +106,12 @@ fun BorrowerPaymentHistoryScreen(vm: BorrowerViewModel, onBack: () -> Unit) {
 private fun PaymentEntryRow(entry: BorrowerPaymentHistory) {
     val isBorrow = entry.type == "payment"
     val iconTint = if (isBorrow) Color(0xFF1565C0) else OverdueRed
-    val icon = if (isBorrow) Icons.Default.ArrowUpward else Icons.Default.Warning
+    val icon = when (entry.type) {
+        "payment" -> Icons.Default.ArrowUpward
+        "penalty" -> Icons.Default.Warning
+        "damage_charge" -> Icons.Default.ReportProblem
+        else -> Icons.Default.Payments
+    }
 
     Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically) {

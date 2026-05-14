@@ -89,10 +89,23 @@ class AuthRepository {
     }
 
     suspend fun login(email: String, password: String): Result<User> = runCatching {
-        val result = auth.signInWithEmailAndPassword(email, password).await()
-        val uid = result.user?.uid ?: throw Exception("Login failed.")
-        val snap = db.child("users/$uid").get().await()
-        snap.getValue(User::class.java) ?: throw Exception("User data not found.")
+        val trimmedEmail = email.trim()
+        
+        // Attempt login first. If it fails, we check why.
+        try {
+            val result = auth.signInWithEmailAndPassword(trimmedEmail, password).await()
+            val uid = result.user?.uid ?: throw Exception("Login failed.")
+            val snap = db.child("users/$uid").get().await()
+            snap.getValue(User::class.java) ?: throw Exception("User data not found.")
+        } catch (e: com.google.firebase.auth.FirebaseAuthInvalidUserException) {
+            throw Exception("Account not found — please register")
+        } catch (e: Exception) {
+            // Check if email exists in database as a fallback for custom error message
+            if (!checkEmailExists(trimmedEmail)) {
+                throw Exception("Account not found — please register")
+            }
+            throw e
+        }
     }
 
     suspend fun getCurrentUser(): User? {

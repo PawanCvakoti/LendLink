@@ -30,6 +30,9 @@ object Routes {
     const val BORROWER_PAYMENT_HISTORY = "borrower_payment_history"
     const val BORROWER_HISTORY = "borrower_history"
     const val PROFILE = "profile"
+    const val LENDER_REPORT_DAMAGE = "lender_report_damage"
+    const val DAMAGE_REPORT_DETAIL = "damage_report_detail"
+    const val DAMAGE_HISTORY = "damage_history"
 }
 
 @Composable
@@ -89,6 +92,7 @@ fun NavGraph(
                 onManageCategories = { navController.navigate(Routes.LENDER_CATEGORY_MANAGER) },
                 onCreditHistory = { navController.navigate(Routes.LENDER_CREDIT_HISTORY) },
                 onLendHistory = { navController.navigate(Routes.LENDER_HISTORY) },
+                onDamageHistory = { navController.navigate(Routes.DAMAGE_HISTORY) },
                 onProfile = { navController.navigate(Routes.PROFILE) }
             )
         }
@@ -103,9 +107,21 @@ fun NavGraph(
         composable("${Routes.LENDER_ITEM_DETAIL}/{itemId}") { back ->
             val id = back.arguments?.getString("itemId") ?: ""
             val items by lenderVm.available.collectAsState()
-            val item = items.find { it.itemId == id }
             
-            if (item != null) {
+            val item = items.find { it.itemId == id }
+            val lastValidItem = remember(id) { mutableStateOf<Item?>(null) }
+            if (item != null) lastValidItem.value = item
+            
+            // Detect if item disappeared (e.g. borrowed by someone else or deleted)
+            LaunchedEffect(item) {
+                if (item == null && lastValidItem.value != null) {
+                    navController.popBackStack()
+                }
+            }
+            
+            val displayItem = item ?: lastValidItem.value
+
+            if (displayItem != null) {
                 LenderAvailableDetailScreen(id, lenderVm, onBack = { navController.popBackStack() },
                     onEdit = { i: Item -> navController.navigate("${Routes.LENDER_ADD_ITEM}?itemId=${i.itemId}") })
             } else {
@@ -119,10 +135,35 @@ fun NavGraph(
             val id = back.arguments?.getString("itemId") ?: ""
             val items by lenderVm.lent.collectAsState()
             val requests by lenderVm.pendingReturns.collectAsState()
+            
             val item = items.find { it.itemId == id }
+            val lastValidItem = remember(id) { mutableStateOf<Item?>(null) }
+            if (item != null) lastValidItem.value = item
+            
             val req = requests.find { it.itemId == id }
-            item?.let {
-                LentItemDetailScreen(it, lenderVm, req, onBack = { navController.popBackStack() })
+            val lastValidReq = remember(id) { mutableStateOf<ReturnRequest?>(null) }
+            if (req != null) lastValidReq.value = req
+            
+            val displayItem = item ?: lastValidItem.value
+            val displayReq = req ?: lastValidReq.value
+            
+            // Auto-exit if item is removed (return accepted)
+            LaunchedEffect(item) {
+                if (item == null && lastValidItem.value != null) {
+                    navController.popBackStack()
+                }
+            }
+
+            if (displayItem != null) {
+                LentItemDetailScreen(displayItem, lenderVm, displayReq, 
+                    onBack = { navController.popBackStack() },
+                    onReportDamage = { recordId -> navController.navigate("${Routes.LENDER_REPORT_DAMAGE}/$recordId") },
+                    onViewDamage = { recordId -> navController.navigate("${Routes.DAMAGE_REPORT_DETAIL}/$recordId") }
+                )
+            } else {
+                LaunchedEffect(id) {
+                    navController.popBackStack()
+                }
             }
         }
 
@@ -147,6 +188,7 @@ fun NavGraph(
                 onNotifications = { navController.navigate(Routes.NOTIFICATIONS) },
                 onPaymentHistory = { navController.navigate(Routes.BORROWER_PAYMENT_HISTORY) },
                 onBorrowHistory = { navController.navigate(Routes.BORROWER_HISTORY) },
+                onDamageHistory = { navController.navigate(Routes.DAMAGE_HISTORY) },
                 onProfile = { navController.navigate(Routes.PROFILE) },
                 onLogout = {
                     navController.navigate(Routes.LOGIN) { popUpTo(0) { inclusive = true } }
@@ -159,23 +201,56 @@ fun NavGraph(
         composable("${Routes.BORROWER_AVAILABLE_DETAIL}/{itemId}") { back ->
             val id = back.arguments?.getString("itemId") ?: ""
             val items by borrowerVm.allItems.collectAsState()
+            
             val item = items.find { it.itemId == id }
-            item?.let {
-                BorrowerAvailableItemDetailScreen(it, onBack = { navController.popBackStack() }, onScan = { navController.navigate(Routes.BORROWER_SCAN_QR) })
+            val lastValidItem = remember(id) { mutableStateOf<Item?>(null) }
+            if (item != null) lastValidItem.value = item
+            
+            // Detect if item status changed (e.g. successfully borrowed)
+            LaunchedEffect(item) {
+                if (item == null && lastValidItem.value != null) {
+                    navController.popBackStack()
+                }
+            }
+            
+            val displayItem = item ?: lastValidItem.value
+
+            displayItem?.let {
+                BorrowerAvailableItemDetailScreen(it, borrowerVm, onBack = { navController.popBackStack() }, onScan = { navController.navigate("${Routes.BORROWER_SCAN_QR}?expectedId=$id") })
             } ?: LaunchedEffect(id) { navController.popBackStack() }
         }
 
         composable("${Routes.BORROWER_ITEM_DETAIL}/{recordId}") { back ->
             val id = back.arguments?.getString("recordId") ?: ""
             val records by borrowerVm.active.collectAsState()
+            
             val record = records.find { it.recordId == id }
-            record?.let {
-                BorrowerItemDetailScreen(it, borrowerVm, onBack = { navController.popBackStack() })
+            val lastValidRecord = remember(id) { mutableStateOf<BorrowRecord?>(null) }
+            if (record != null) lastValidRecord.value = record
+            
+            // Auto-exit if borrower record is removed (e.g. return accepted by lender)
+            LaunchedEffect(record) {
+                if (record == null && lastValidRecord.value != null) {
+                    navController.popBackStack()
+                }
+            }
+            
+            val displayRecord = record ?: lastValidRecord.value
+
+            displayRecord?.let {
+                BorrowerItemDetailScreen(it, borrowerVm, 
+                    onBack = { navController.popBackStack() },
+                    onViewDamage = { recordId -> navController.navigate("${Routes.DAMAGE_REPORT_DETAIL}/$recordId") }
+                )
             } ?: LaunchedEffect(id) { navController.popBackStack() }
         }
 
-        composable(Routes.BORROWER_SCAN_QR) {
-            ScanQRScreen(borrowerVm, onScanned = { 
+        composable(
+            route = "${Routes.BORROWER_SCAN_QR}?expectedId={expectedId}",
+            arguments = listOf(navArgument("expectedId") { nullable = true; defaultValue = null })
+        ) { back ->
+            val expectedId = back.arguments?.getString("expectedId")
+            ScanQRScreen(borrowerVm, expectedId, onScanned = {
                 navController.popBackStack() 
             }, onBack = { navController.popBackStack() })
         }
@@ -202,6 +277,95 @@ fun NavGraph(
             if (user != null) {
                 ProfileScreen(user, authVm, onBack = { navController.popBackStack() })
             }
+        }
+
+        // ── DAMAGE REPORTING ROUTES ──────────────────────────
+        composable("${Routes.LENDER_REPORT_DAMAGE}/{recordId}") { back ->
+            val id = back.arguments?.getString("recordId") ?: ""
+            val items by lenderVm.lent.collectAsState()
+            
+            // Try finding by recordId first, then itemId as backup
+            val item = items.find { it.recordId == id } ?: items.find { it.itemId == id }
+            val lastValidItem = remember(id) { mutableStateOf<Item?>(null) }
+            if (item != null) lastValidItem.value = item
+            
+            // Auto-exit if item disappears
+            LaunchedEffect(item) {
+                if (item == null && lastValidItem.value != null) {
+                    navController.popBackStack()
+                }
+            }
+            
+            val displayItem = item ?: lastValidItem.value
+            
+            displayItem?.let {
+                val record = BorrowRecord(
+                    // Important: Use 'id' from navigation if item's recordId is blank (new items)
+                    recordId = it.recordId.ifBlank { id }, 
+                    itemId = it.itemId, 
+                    itemName = it.name, 
+                    itemImageUrl = it.imageUrl,
+                    itemCategory = it.category, 
+                    lenderId = it.lenderId, 
+                    lenderName = it.lenderName,
+                    borrowerId = it.borrowerId, 
+                    borrowerName = it.borrowerName, 
+                    status = it.status
+                )
+                ReportDamageScreen(record, lenderVm, onBack = { navController.popBackStack() })
+            } ?: LaunchedEffect(id) {
+                navController.popBackStack()
+            }
+        }
+
+        composable("${Routes.DAMAGE_REPORT_DETAIL}/{recordId}") { back ->
+            val id = back.arguments?.getString("recordId") ?: ""
+            val role = user?.role ?: ""
+            
+            val items = lenderVm.lent.collectAsState().value
+            val active = borrowerVm.active.collectAsState().value
+            
+            val record = if (role == "lender") {
+                items.find { it.recordId == id || it.itemId == id }?.let {
+                    BorrowRecord(
+                        recordId = it.recordId.ifBlank { id }, 
+                        itemId = it.itemId, 
+                        itemName = it.name, 
+                        itemImageUrl = it.imageUrl, 
+                        damageReport = it.damageReport, 
+                        lenderId = it.lenderId, 
+                        borrowerId = it.borrowerId, 
+                        borrowerName = it.borrowerName, 
+                        status = it.status
+                    )
+                }
+            } else {
+                active.find { it.recordId == id }
+            }
+            
+            val lastValidRecord = remember(id) { mutableStateOf<BorrowRecord?>(null) }
+            if (record != null) lastValidRecord.value = record
+            
+            // Detect external resolution (e.g. lender accepted return after damage pay)
+            LaunchedEffect(record) {
+                if (record == null && lastValidRecord.value != null) {
+                    navController.popBackStack()
+                }
+            }
+
+            val displayRecord = record ?: lastValidRecord.value
+            
+            displayRecord?.let {
+                DamageReportDetailScreen(it, role, lenderVm, borrowerVm, onBack = { navController.popBackStack() })
+            } ?: LaunchedEffect(id) {
+                navController.popBackStack()
+            }
+        }
+
+        composable(Routes.DAMAGE_HISTORY) {
+            val role = user?.role ?: ""
+            val history = if (role == "lender") lenderVm.damageHistory.collectAsState().value else borrowerVm.damageHistory.collectAsState().value
+            DamageHistoryScreen(history, onBack = { navController.popBackStack() })
         }
     }
 }
