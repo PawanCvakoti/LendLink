@@ -57,7 +57,28 @@ data class Item(
     val deadline: Long = 0L,
     val borrowedAt: Long = 0L,
     val createdAt: Long = System.currentTimeMillis()
-)
+) {
+    fun toRecord(manualRecordId: String = "") = BorrowRecord(
+        recordId = if (manualRecordId.isNotEmpty()) manualRecordId else this.recordId,
+        itemId = this.itemId,
+        itemName = this.name,
+        itemImageUrl = this.imageUrl,
+        itemCategory = this.category,
+        lenderId = this.lenderId,
+        lenderName = this.lenderName,
+        lenderPhone = this.lenderPhone,
+        lenderLocation = this.lenderLocation,
+        borrowerId = this.borrowerId,
+        borrowerName = this.borrowerName,
+        borrowerPhone = this.borrowerPhone,
+        borrowerLocation = this.borrowerLocation,
+        price = this.price,
+        borrowedAt = this.borrowedAt,
+        deadline = this.deadline,
+        status = this.status,
+        damageReport = this.damageReport
+    )
+}
 
 // ── BorrowRecord ──────────────────────────────────────────────
 @Entity(tableName = "borrow_records")
@@ -100,14 +121,21 @@ data class DamageHistory(
     @PrimaryKey val historyId: String = "",
     val itemId: String = "",
     val itemName: String = "",
+    val itemImageUrl: String = "",
+    val itemCategory: String = "",
     val lenderId: String = "",
     val lenderName: String = "",
+    val lenderPhone: String = "",
+    val lenderLocation: String = "",
     val borrowerId: String = "",
     val borrowerName: String = "",
+    val borrowerPhone: String = "",
+    val borrowerLocation: String = "",
     val damageImageUrl: String = "",
     val condition: String = "",
     val description: String = "",
     val chargeAmount: Long = 0L,
+    val borrowedAt: Long = 0L,
     val paymentStatus: String = "", // "Paid" or "Negotiated"
     val timestamp: Long = System.currentTimeMillis()
 )

@@ -67,7 +67,7 @@ class ItemRepository(private val dao: ItemDao) {
         val q = db.child("items").orderByChild("lenderId").equalTo(lenderId)
         val l = object : ValueEventListener {
             override fun onDataChange(s: DataSnapshot) {
-                trySend(s.children.mapNotNull { it.getValue(Item::class.java) }.filter { it.status == "lent" })
+                trySend(s.children.mapNotNull { it.getValue(Item::class.java) }.filter { it.status != "available" })
             }
             override fun onCancelled(e: DatabaseError) {
                 if (e.code == DatabaseError.PERMISSION_DENIED) close() else close(e.toException())

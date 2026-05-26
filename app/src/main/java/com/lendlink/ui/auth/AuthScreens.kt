@@ -1,12 +1,21 @@
 package com.lendlink.ui.auth
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Context
+import android.content.IntentSender
+import android.location.Geocoder
+import android.location.LocationManager
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.unit.dp
@@ -31,8 +41,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import com.google.android.gms.common.api.ResolvableApiException
+import com.google.android.gms.location.*
 import com.lendlink.viewmodel.AuthState
 import com.lendlink.viewmodel.AuthViewModel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import java.util.Locale
 
 // ── LOGIN SCREEN ──────────────────────────────────────────────
 @OptIn(ExperimentalMaterial3Api::class)
@@ -146,11 +161,91 @@ fun RegisterScreen(
     var passVis by remember { mutableStateOf(false) }
     var confirmPassVis by remember { mutableStateOf(false) }
     var locationAddress by remember { mutableStateOf("") }
-    var lat by remember { mutableStateOf(0.0) }
-    var lng by remember { mutableStateOf(0.0) }
+    var lat by remember { mutableDoubleStateOf(35.9078) } // Center of South Korea
+    var lng by remember { mutableDoubleStateOf(127.7669) }
     var showMap by remember { mutableStateOf(false) }
+    var isFetchingLocation by remember { mutableStateOf(false) }
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val locPerm = rememberPermissionState(Manifest.permission.ACCESS_FINE_LOCATION)
+
+    @SuppressLint("MissingPermission")
+    suspend fun fetchCurrentLocation() {
+        try {
+            val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+            val location = fusedLocationClient.getCurrentLocation(
+                CurrentLocationRequest.Builder()
+                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                    .setMaxUpdateAgeMillis(5000)
+                    .build(),
+                null
+            ).await()
+
+            location?.let {
+                lat = it.latitude
+                lng = it.longitude
+                
+                val geocoder = Geocoder(context, Locale.getDefault())
+                val addresses = geocoder.getFromLocation(it.latitude, it.longitude, 1)
+                if (!addresses.isNullOrEmpty()) {
+                    locationAddress = addresses[0].getAddressLine(0)
+                } else {
+                    locationAddress = "Lat: ${String.format("%.4f", it.latitude)}, Lng: ${String.format("%.4f", it.longitude)}"
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun fetchAndShowMap() {
+        scope.launch {
+            isFetchingLocation = true
+            fetchCurrentLocation()
+            isFetchingLocation = false
+            showMap = true
+        }
+    }
+
+    val locationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            fetchAndShowMap()
+        }
+    }
+
+    fun checkAndRequestLocation() {
+        if (!locPerm.status.isGranted) {
+            locPerm.launchPermissionRequest()
+            return
+        }
+
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        
+        if (!isGpsEnabled) {
+            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000).build()
+            val builder = LocationSettingsRequest.Builder().addLocationRequest(locationRequest)
+            val client = LocationServices.getSettingsClient(context)
+            val task = client.checkLocationSettings(builder.build())
+
+            task.addOnFailureListener { exception ->
+                if (exception is ResolvableApiException) {
+                    try {
+                        val intentSenderRequest = IntentSenderRequest.Builder(exception.resolution.intentSender).build()
+                        locationLauncher.launch(intentSenderRequest)
+                    } catch (_: IntentSender.SendIntentException) {}
+                }
+            }
+            task.addOnSuccessListener {
+                fetchAndShowMap()
+            }
+        } else {
+            fetchAndShowMap()
+        }
+    }
 
     LaunchedEffect(state) {
         when (val s = state) {
@@ -166,6 +261,8 @@ fun RegisterScreen(
 
     if (showMap) {
         LocationPickerDialog(
+            initialLat = lat,
+            initialLng = lng,
             onConfirm = { selectedLat, selectedLng, address ->
                 lat = selectedLat; lng = selectedLng; locationAddress = address
                 showMap = false
@@ -272,16 +369,22 @@ fun RegisterScreen(
             // Location picker
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
-                    value = locationAddress.ifEmpty { "Tap to select your location" },
+                    value = if (isFetchingLocation) "Fetching location..." else locationAddress.ifEmpty { "Tap to select your location" },
                     onValueChange = {},
                     label = { Text("Location") },
-                    leadingIcon = { Icon(Icons.Default.LocationOn, null, tint = MaterialTheme.colorScheme.primary) },
+                    leadingIcon = { 
+                        if (isFetchingLocation) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp).padding(4.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.LocationOn, null, tint = MaterialTheme.colorScheme.primary)
+                        }
+                    },
                     trailingIcon = { Icon(Icons.Default.Map, null) },
                     readOnly = true,
                     enabled = false,
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
-                        disabledTextColor = MaterialTheme.colorScheme.onSurface,
+                        disabledTextColor = if (isFetchingLocation) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                         disabledBorderColor = MaterialTheme.colorScheme.outline,
                         disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         disabledLeadingIconColor = MaterialTheme.colorScheme.primary,
@@ -289,9 +392,8 @@ fun RegisterScreen(
                     )
                 )
                 // Overlay to ensure click works on all devices (especially Samsung)
-                Box(modifier = Modifier.matchParentSize().clickable {
-                    showMap = true
-                    if (!locPerm.status.isGranted) locPerm.launchPermissionRequest()
+                Box(modifier = Modifier.matchParentSize().clickable(enabled = !isFetchingLocation) {
+                    checkAndRequestLocation()
                 })
             }
             Spacer(Modifier.height(16.dp))
@@ -350,12 +452,30 @@ fun RegisterScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocationPickerDialog(
+    initialLat: Double,
+    initialLng: Double,
     onConfirm: (lat: Double, lng: Double, address: String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var selectedLat by remember { mutableStateOf(35.9078) } // Center of South Korea
-    var selectedLng by remember { mutableStateOf(127.7669) }
-    var displayAddress by remember { mutableStateOf("Tap on map to select") }
+    var selectedLat by remember(initialLat) { mutableDoubleStateOf(initialLat) }
+    var selectedLng by remember(initialLng) { mutableDoubleStateOf(initialLng) }
+    var displayAddress by remember { mutableStateOf("Fetching address...") }
+    val context = LocalContext.current
+
+    // Update display address when coordinates change
+    LaunchedEffect(selectedLat, selectedLng) {
+        try {
+            val geocoder = Geocoder(context, Locale.getDefault())
+            val addresses = geocoder.getFromLocation(selectedLat, selectedLng, 1)
+            if (!addresses.isNullOrEmpty()) {
+                displayAddress = addresses[0].getAddressLine(0)
+            } else {
+                displayAddress = "Lat: ${String.format("%.4f", selectedLat)}, Lng: ${String.format("%.4f", selectedLng)}"
+            }
+        } catch (_: Exception) {
+            displayAddress = "Lat: ${String.format("%.4f", selectedLat)}, Lng: ${String.format("%.4f", selectedLng)}"
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -363,15 +483,15 @@ fun LocationPickerDialog(
         modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f).padding(16.dp),
         title = {
             Column {
-                Text("Pick Meeting Point", fontWeight = FontWeight.Bold)
-                Text("Tap map in South Korea to select", style = MaterialTheme.typography.bodySmall)
+                Text("Select Location", fontWeight = FontWeight.Bold)
+                Text(displayAddress, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, maxLines = 2)
             }
         },
         text = {
             Box(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp))
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))) {
-                AndroidView(factory = { context ->
-                    WebView(context).apply {
+                AndroidView(factory = { ctx ->
+                    WebView(ctx).apply {
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
@@ -381,21 +501,22 @@ fun LocationPickerDialog(
                             domStorageEnabled = true
                             loadWithOverviewMode = true
                             useWideViewPort = true
-                            setGeolocationEnabled(true)
-                            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                            cacheMode = WebSettings.LOAD_DEFAULT
                         }
                         
                         webChromeClient = WebChromeClient()
-                        webViewClient = WebViewClient()
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                super.onPageFinished(view, url)
+                                // If we have initial coordinates, set the marker and view
+                                view?.loadUrl("javascript:updateMap($initialLat, $initialLng)")
+                            }
+                        }
 
                         addJavascriptInterface(WebAppInterface { lat, lng ->
                             selectedLat = lat
                             selectedLng = lng
-                            displayAddress = "Lat: ${String.format("%.4f", lat)}, Lng: ${String.format("%.4f", lng)}"
                         }, "AndroidBridge")
 
-                        // Improved HTML with restricted bounds to South Korea
                         val html = """
                             <!DOCTYPE html>
                             <html>
@@ -411,28 +532,29 @@ fun LocationPickerDialog(
                             <body>
                                 <div id="map"></div>
                                 <script>
-                                    // South Korea Bounds
-                                    var southWest = L.latLng(33.0, 124.0),
-                                        northEast = L.latLng(39.0, 131.0),
-                                        bounds = L.latLngBounds(southWest, northEast);
-
                                     var map = L.map('map', {
                                         zoomControl: true,
-                                        attributionControl: false,
-                                        maxBounds: bounds,
-                                        maxBoundsViscosity: 1.0
-                                    }).setView([35.9078, 127.7669], 7);
+                                        attributionControl: false
+                                    }).setView([$initialLat, $initialLng], 15);
                                     
-                                    // Use a different CDN for tiles to avoid "Access Blocked"
-                                    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                                        minZoom: 6,
-                                        maxZoom: 18
+                                    // Use CartoDB Positron tiles which are more reliable in WebViews
+                                    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                                        attribution: '&copy; OpenStreetMap &copy; CartoDB',
+                                        subdomains: 'abcd',
+                                        maxZoom: 20
                                     }).addTo(map);
 
-                                    var marker;
-                                    map.on('click', function(e) {
+                                    var marker = L.marker([$initialLat, $initialLng]).addTo(map);
+
+                                    function updateMap(lat, lng) {
+                                        var latlng = L.latLng(lat, lng);
                                         if (marker) map.removeLayer(marker);
-                                        marker = L.marker(e.latlng).addTo(map);
+                                        marker = L.marker(latlng).addTo(map);
+                                        map.setView(latlng, 18); // Zoom in closer for exact location
+                                    }
+
+                                    map.on('click', function(e) {
+                                        updateMap(e.latlng.lat, e.latlng.lng);
                                         AndroidBridge.onMapClick(e.latlng.lat, e.latlng.lng);
                                     });
                                     
@@ -443,8 +565,7 @@ fun LocationPickerDialog(
                             </body>
                             </html>
                         """.trimIndent()
-                        // Loading with a proper data URI to bypass certain WebView origin restrictions
-                        loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                        loadDataWithBaseURL("https://carto.com", html, "text/html", "UTF-8", null)
                     }
                 }, modifier = Modifier.fillMaxSize())
             }
@@ -453,7 +574,7 @@ fun LocationPickerDialog(
             Button(
                 onClick = { onConfirm(selectedLat, selectedLng, displayAddress) },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-            ) { Text("Confirm This Location") }
+            ) { Text("Confirm Location") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }

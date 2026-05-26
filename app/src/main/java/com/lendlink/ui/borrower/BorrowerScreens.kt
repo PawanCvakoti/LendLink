@@ -212,7 +212,7 @@ fun BorrowerDashboard(
                     EmptyState("No active borrows", "Try changing your search or category", Icons.Default.SearchOff)
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        items(filteredActive) { record -> ActiveBorrowCard(record, onItemClick) }
+                        items(filteredActive, key = { it.recordId }) { record -> ActiveBorrowCard(record, onItemClick) }
                     }
                 }
             } else {
@@ -221,7 +221,7 @@ fun BorrowerDashboard(
                     EmptyState("No items found", "Try changing your search or category", Icons.Default.SearchOff)
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        items(filteredAvailable) { item -> ItemCard(item, onBrowseItem) }
+                        items(filteredAvailable, key = { it.itemId }) { item -> ItemCard(item, onBrowseItem) }
                     }
                 }
             }
@@ -289,7 +289,10 @@ fun BorrowerAvailableItemDetailScreen(item: Item, vm: BorrowerViewModel, onBack:
             scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
             vm.resetUi()
             // If borrowed successfully, go back to dashboard to see active borrows
-            if (s.message.contains("successfully")) onBack()
+            if (s.message.contains("successfully")) {
+                kotlinx.coroutines.delay(300) // Brief delay to ensure database syncs
+                onBack()
+            }
         } else if (s is UiState.Error) {
             scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
             vm.resetUi()
@@ -459,15 +462,32 @@ fun BorrowerItemDetailScreen(record: BorrowRecord, vm: BorrowerViewModel, onBack
                 Spacer(Modifier.height(8.dp))
                 
                 if (record.status == "damaged" || record.status == "negotiating") {
-                    Button(
-                        onClick = { onViewDamage(record.recordId) },
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = OverdueRed)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = OverdueRed.copy(0.1f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, OverdueRed.copy(0.2f))
                     ) {
-                        Icon(Icons.Default.Warning, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("View Damage Report", style = MaterialTheme.typography.titleMedium)
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Warning, null, tint = OverdueRed, modifier = Modifier.size(24.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    "Lender has reported damage for this item. Please review the report.", 
+                                    style = MaterialTheme.typography.bodyMedium, 
+                                    color = OverdueRed, 
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Button(
+                                onClick = { onViewDamage(record.recordId) },
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = OverdueRed)
+                            ) {
+                                Text("View Damage Report", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 } else {
                     val isRequested = record.status == "return_requested"

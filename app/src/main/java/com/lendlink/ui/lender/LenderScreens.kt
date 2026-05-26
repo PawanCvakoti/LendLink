@@ -142,6 +142,7 @@ fun LenderDashboard(
     ) { pad ->
         Column(modifier = Modifier.fillMaxSize().padding(pad)) {
             WalletCard(wallet, lenderName, "Lender Earnings")
+            
             if (pendingReturns.isNotEmpty()) {
                 Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { tab = 1 }, colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0))) {
                     Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -182,7 +183,7 @@ fun LenderDashboard(
             
             when (tab) {
                 0 -> AvailableTab(available, onAvailableClick)
-                1 -> LentTab(lent, onLentClick)
+                1 -> LentTab(lent, pendingReturns, onLentClick)
             }
         }
     }
@@ -197,18 +198,21 @@ private fun AvailableTab(items: List<Item>, onItem: (Item) -> Unit) {
 }
 
 @Composable
-private fun LentTab(items: List<Item>, onItem: (Item) -> Unit) {
+private fun LentTab(items: List<Item>, pendingReturns: List<ReturnRequest>, onItem: (Item) -> Unit) {
     if (items.isEmpty()) EmptyState("No lent items found", "Try changing your search or category", Icons.Default.SearchOff)
     else LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items(items, key = { it.itemId }) { item ->
             val overdue = item.deadline > 0L && System.currentTimeMillis() > item.deadline
+            val hasReturnRequest = pendingReturns.any { it.itemId == item.itemId || it.recordId == item.recordId }
+            
             Card(
                 modifier = Modifier.fillMaxWidth().clickable { onItem(item) },
                 elevation = CardDefaults.cardElevation(2.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (overdue) Color(0xFFFFF8F6) else MaterialTheme.colorScheme.surface,
-                    contentColor = if (overdue) Color.Black else MaterialTheme.colorScheme.onSurface
+                    containerColor = if (overdue) Color(0xFFFFF8F6) 
+                                     else MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface
                 )
             ) {
                 Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -231,7 +235,22 @@ private fun LentTab(items: List<Item>, onItem: (Item) -> Unit) {
                             color = if (overdue) OverdueRed else MaterialTheme.colorScheme.onSurface.copy(.6f)
                         )
                         Spacer(Modifier.height(4.dp))
-                        StatusChip(if (overdue) "Overdue" else "Lent", if (overdue) OverdueRed else LentOrange)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            StatusChip(if (overdue) "Overdue" else "Lent", if (overdue) OverdueRed else LentOrange)
+                            
+                            if (item.status == "damaged") {
+                                Spacer(Modifier.width(8.dp))
+                                StatusChip("Damaged", OverdueRed)
+                            } else if (item.status == "negotiating") {
+                                Spacer(Modifier.width(8.dp))
+                                StatusChip("Negotiating", Color(0xFF2196F3))
+                            }
+
+                            if (hasReturnRequest && item.status != "damaged" && item.status != "negotiating") {
+                                Spacer(Modifier.width(8.dp))
+                                StatusChip("Return Pending", Color(0xFF2196F3))
+                            }
+                        }
                     }
                     Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurface.copy(.4f))
                 }
@@ -543,13 +562,7 @@ fun CategoryManagerScreen(vm: LenderViewModel, onBack: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LenderAvailableDetailScreen(itemId: String, vm: LenderViewModel, onBack: () -> Unit, onEdit: (Item) -> Unit) {
-    val items by vm.available.collectAsState()
-    val item = items.find { it.itemId == itemId } ?: run {
-        LaunchedEffect(Unit) { onBack() }
-        return
-    }
-
+fun LenderAvailableDetailScreen(item: Item, vm: LenderViewModel, onBack: () -> Unit, onEdit: (Item) -> Unit) {
     var showQr by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     val uiState by vm.ui.collectAsState()
@@ -717,8 +730,12 @@ fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, o
         val s = uiState
         if (s is UiState.Success) {
             if (s.message == "Accepted") {
-                vm.resetUi()
-                onBack()
+                scope.launch {
+                    snack.showSnackbar("Return accepted successfully", duration = SnackbarDuration.Short)
+                    kotlinx.coroutines.delay(300) // Brief delay for database sync
+                    vm.resetUi()
+                    onBack()
+                }
             } else {
                 scope.launch { snack.showSnackbar(s.message, duration = SnackbarDuration.Short) }
                 vm.resetUi()
@@ -757,7 +774,35 @@ fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, o
                 
                 Spacer(Modifier.height(24.dp))
                 
-                if (req != null) {
+                if (item.status == "damaged" || item.status == "negotiating") {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = OverdueRed.copy(0.1f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, OverdueRed.copy(0.2f))
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Warning, null, tint = OverdueRed, modifier = Modifier.size(24.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    "Damage report has been submitted. Borrower needs to review and pay.", 
+                                    style = MaterialTheme.typography.bodyMedium, 
+                                    color = OverdueRed, 
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Button(
+                                onClick = { onViewDamage(item.recordId) },
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = OverdueRed)
+                            ) {
+                                Text("View Damage Report", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                } else if (req != null) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
@@ -801,24 +846,7 @@ fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, o
                             Row(modifier = Modifier.fillMaxWidth()) {
                                 Button(
                                     onClick = {
-                                        val record = BorrowRecord(
-                                            recordId = req.recordId,
-                                            itemId = item.itemId,
-                                            itemName = item.name,
-                                            itemImageUrl = item.imageUrl,
-                                            itemCategory = item.category,
-                                            lenderId = item.lenderId,
-                                            lenderName = item.lenderName,
-                                            lenderPhone = item.lenderPhone,
-                                            lenderLocation = item.lenderLocation,
-                                            borrowerId = item.borrowerId,
-                                            borrowerName = item.borrowerName,
-                                            borrowerPhone = item.borrowerPhone,
-                                            borrowerLocation = item.borrowerLocation,
-                                            price = item.price,
-                                            borrowedAt = item.borrowedAt,
-                                            deadline = item.deadline
-                                        )
+                                        val record = item.toRecord(req.recordId)
                                         vm.acceptReturn(record, req.requestId) 
                                     },
                                     modifier = Modifier.weight(1f).height(54.dp),
@@ -846,24 +874,10 @@ fun LentItemDetailScreen(item: Item, vm: LenderViewModel, req: ReturnRequest?, o
                             }
                         }
                     }
-                } else if (item.status == "damaged" || item.status == "negotiating") {
-                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = OverdueRed.copy(0.1f))) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Damage report has been created and sent to borrower", color = OverdueRed, fontWeight = FontWeight.Bold)
-                            Button(onClick = { onViewDamage(item.recordId) }, modifier = Modifier.fillMaxWidth()) {
-                                Text("View Report")
-                            }
-                        }
-                    }
                 } else {
                     Button(
                         onClick = { 
-                            val record = BorrowRecord(
-                                itemId = item.itemId,
-                                borrowerId = item.borrowerId,
-                                itemName = item.name,
-                                deadline = item.deadline
-                            )
+                            val record = item.toRecord()
                             vm.sendReminder(record) 
                         },
                         modifier = Modifier.fillMaxWidth().height(50.dp),

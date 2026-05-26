@@ -132,14 +132,37 @@ fun ReportDamageScreen(record: BorrowRecord, vm: LenderViewModel, onBack: () -> 
 fun DamageReportDetailScreen(record: BorrowRecord, role: String, lenderVm: LenderViewModel, borrowerVm: BorrowerViewModel, onBack: () -> Unit) {
     val report = record.damageReport ?: return
     val uiState = if (role == "lender") lenderVm.ui.collectAsState().value else borrowerVm.ui.collectAsState().value
+    val wallet by borrowerVm.wallet.collectAsState()
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var showInsufficientCreditsDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState) {
         if (uiState is UiState.Success) {
             if (role == "lender") lenderVm.resetUi() else borrowerVm.resetUi()
             onBack()
         }
+    }
+
+    if (showInsufficientCreditsDialog) {
+        AlertDialog(
+            onDismissRequest = { showInsufficientCreditsDialog = false },
+            title = { Text("Insufficient Credits") },
+            text = { Text("Your credit is less than the required damage charges. Would you like to initiate a negotiation instead?") },
+            confirmButton = {
+                Button(onClick = {
+                    showInsufficientCreditsDialog = false
+                    borrowerVm.requestNegotiation(record)
+                }) {
+                    Text("Negotiate")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showInsufficientCreditsDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -172,21 +195,60 @@ fun DamageReportDetailScreen(record: BorrowRecord, role: String, lenderVm: Lende
                 Spacer(Modifier.height(24.dp))
 
                 if (role == "borrower" && record.status == "damaged") {
-                    Button(onClick = { borrowerVm.payDamageCharge(record, report.chargeAmount) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(12.dp)) {
+                    Button(
+                        onClick = { 
+                            if (wallet < report.chargeAmount) {
+                                showInsufficientCreditsDialog = true
+                            } else {
+                                borrowerVm.payDamageCharge(record, report.chargeAmount) 
+                            }
+                        }, 
+                        modifier = Modifier.fillMaxWidth().height(54.dp), 
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
                         Text("Pay ₩${report.chargeAmount} & Close")
                     }
                     OutlinedButton(onClick = { borrowerVm.requestNegotiation(record) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(12.dp)) {
                         Text("Request Negotiation")
                     }
                 } else if (role == "lender" && record.status == "negotiating") {
-                    Button(onClick = { lenderVm.completeNegotiation(record) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(12.dp)) {
-                        Text("Mark Negotiation as Resolved")
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Info, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    "Please ensure you have fully negotiated with the borrower and settled the damage resolution before marking this as resolved.", 
+                                    style = MaterialTheme.typography.bodyMedium, 
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer, 
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Button(
+                                onClick = { lenderVm.completeNegotiation(record) },
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text("Mark Negotiation as Resolved", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 } else {
+                    val statusText = if (record.status == "negotiating") {
+                        if (role == "borrower") "Negotiation in progress. Lender has been notified."
+                        else "Negotiation in progress. Borrower has been notified."
+                    } else {
+                        "Damage report submitted. Waiting for borrower response."
+                    }
                     Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer.copy(0.3f), RoundedCornerShape(8.dp)).padding(16.dp)) {
                         Text(
-                            if (record.status == "negotiating") "Negotiation in progress. Borrower has been notified."
-                            else "Damage report submitted. Waiting for borrower response.",
+                            statusText,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -199,7 +261,7 @@ fun DamageReportDetailScreen(record: BorrowRecord, role: String, lenderVm: Lende
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DamageHistoryScreen(history: List<DamageHistory>, onBack: () -> Unit) {
+fun DamageHistoryScreen(history: List<DamageHistory>, role: String, onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -213,8 +275,8 @@ fun DamageHistoryScreen(history: List<DamageHistory>, onBack: () -> Unit) {
             EmptyState("No Damage History", "Records of resolved damages will appear here.", Icons.Default.History)
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(history) { item ->
-                    DamageHistoryCard(item)
+                items(history, key = { it.historyId }) { item ->
+                    DamageHistoryCard(item, role)
                 }
             }
         }
@@ -222,19 +284,72 @@ fun DamageHistoryScreen(history: List<DamageHistory>, onBack: () -> Unit) {
 }
 
 @Composable
-fun DamageHistoryCard(history: DamageHistory) {
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(history.damageImageUrl, null, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+fun DamageHistoryCard(history: DamageHistory, role: String) {
+    val isLender = role == "lender"
+    Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(2.dp), shape = RoundedCornerShape(12.dp)) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
+            // Priority to Damage Image if available
+            val displayImage = history.damageImageUrl.ifBlank { history.itemImageUrl }
+            ItemImage(displayImage, modifier = Modifier.size(80.dp))
+            
             Spacer(Modifier.width(12.dp))
+            
             Column(modifier = Modifier.weight(1f)) {
-                Text(history.itemName, fontWeight = FontWeight.Bold)
-                Text(history.condition, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Text(fmtDate(history.timestamp), style = MaterialTheme.typography.labelSmall, color = Color.LightGray)
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(krw(history.chargeAmount), fontWeight = FontWeight.Bold, color = OverdueRed)
-                StatusChip(history.paymentStatus, if (history.paymentStatus == "Paid") AvailGreen else LentOrange)
+                Text(history.itemName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(history.itemCategory.ifBlank { "General" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                
+                Spacer(Modifier.height(8.dp))
+                
+                // Show other party's info
+                val otherName = if (isLender) history.borrowerName.ifBlank { "Borrower" } 
+                               else history.lenderName.ifBlank { "Lender" }
+                val otherPhone = if (isLender) history.borrowerPhone else history.lenderPhone
+                val otherLocation = if (isLender) history.borrowerLocation else history.lenderLocation
+                
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Person, null, modifier = Modifier.size(14.dp), tint = Color.Gray)
+                    Spacer(Modifier.width(4.dp))
+                    Text(otherName, style = MaterialTheme.typography.bodySmall, color = Color.Gray, fontWeight = FontWeight.Bold)
+                }
+                
+                if (otherPhone.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Phone, null, modifier = Modifier.size(14.dp), tint = Color.Gray)
+                        Spacer(Modifier.width(4.dp))
+                        Text(otherPhone, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                }
+                
+                if (otherLocation.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(Icons.Default.LocationOn, null, modifier = Modifier.size(14.dp).padding(top = 2.dp), tint = Color.Gray)
+                        Spacer(Modifier.width(4.dp))
+                        Text(otherLocation, style = MaterialTheme.typography.bodySmall, color = Color.Gray, maxLines = 1)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text("Borrowed", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        Text(fmtDate(history.borrowedAt), style = MaterialTheme.typography.bodySmall)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Resolved", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        Text(fmtDate(history.timestamp), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                
+                Spacer(Modifier.height(8.dp))
+                
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        StatusChip(history.condition, OverdueRed)
+                        StatusChip(history.paymentStatus, if (history.paymentStatus == "Paid") AvailGreen else LentOrange)
+                    }
+                    Text(krw(history.chargeAmount), fontWeight = FontWeight.Bold, color = OverdueRed, style = MaterialTheme.typography.titleMedium)
+                }
             }
         }
     }

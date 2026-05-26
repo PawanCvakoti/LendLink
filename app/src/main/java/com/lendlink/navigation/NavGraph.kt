@@ -122,7 +122,7 @@ fun NavGraph(
             val displayItem = item ?: lastValidItem.value
 
             if (displayItem != null) {
-                LenderAvailableDetailScreen(id, lenderVm, onBack = { navController.popBackStack() },
+                LenderAvailableDetailScreen(displayItem, lenderVm, onBack = { navController.popBackStack() },
                     onEdit = { i: Item -> navController.navigate("${Routes.LENDER_ADD_ITEM}?itemId=${i.itemId}") })
             } else {
                 LaunchedEffect(id) {
@@ -150,7 +150,10 @@ fun NavGraph(
             // Auto-exit if item is removed (return accepted)
             LaunchedEffect(item) {
                 if (item == null && lastValidItem.value != null) {
-                    navController.popBackStack()
+                    kotlinx.coroutines.delay(500) // Give UI time to navigate manually
+                    if (navController.currentDestination?.route?.contains(Routes.LENDER_LENT_DETAIL) == true) {
+                        navController.popBackStack()
+                    }
                 }
             }
 
@@ -299,19 +302,7 @@ fun NavGraph(
             val displayItem = item ?: lastValidItem.value
             
             displayItem?.let {
-                val record = BorrowRecord(
-                    // Important: Use 'id' from navigation if item's recordId is blank (new items)
-                    recordId = it.recordId.ifBlank { id }, 
-                    itemId = it.itemId, 
-                    itemName = it.name, 
-                    itemImageUrl = it.imageUrl,
-                    itemCategory = it.category, 
-                    lenderId = it.lenderId, 
-                    lenderName = it.lenderName,
-                    borrowerId = it.borrowerId, 
-                    borrowerName = it.borrowerName, 
-                    status = it.status
-                )
+                val record = it.toRecord(it.recordId.ifBlank { id })
                 ReportDamageScreen(record, lenderVm, onBack = { navController.popBackStack() })
             } ?: LaunchedEffect(id) {
                 navController.popBackStack()
@@ -326,18 +317,8 @@ fun NavGraph(
             val active = borrowerVm.active.collectAsState().value
             
             val record = if (role == "lender") {
-                items.find { it.recordId == id || it.itemId == id }?.let {
-                    BorrowRecord(
-                        recordId = it.recordId.ifBlank { id }, 
-                        itemId = it.itemId, 
-                        itemName = it.name, 
-                        itemImageUrl = it.imageUrl, 
-                        damageReport = it.damageReport, 
-                        lenderId = it.lenderId, 
-                        borrowerId = it.borrowerId, 
-                        borrowerName = it.borrowerName, 
-                        status = it.status
-                    )
+                items.find { it.recordId == id || it.itemId == id }?.let { found ->
+                    found.toRecord(found.recordId.ifBlank { id })
                 }
             } else {
                 active.find { it.recordId == id }
@@ -365,7 +346,7 @@ fun NavGraph(
         composable(Routes.DAMAGE_HISTORY) {
             val role = user?.role ?: ""
             val history = if (role == "lender") lenderVm.damageHistory.collectAsState().value else borrowerVm.damageHistory.collectAsState().value
-            DamageHistoryScreen(history, onBack = { navController.popBackStack() })
+            DamageHistoryScreen(history, role, onBack = { navController.popBackStack() })
         }
     }
 }

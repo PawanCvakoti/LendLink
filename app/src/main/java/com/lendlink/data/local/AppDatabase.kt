@@ -85,7 +85,7 @@ interface DamageHistoryDao {
         LenderCreditHistory::class, BorrowerPaymentHistory::class,
         LendHistory::class, BorrowHistory::class, DamageHistory::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
